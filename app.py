@@ -5,6 +5,7 @@ import math
 from datetime import date
 import io
 import os
+import urllib.request
 import urllib.parse
 
 from reportlab.lib.pagesizes import A4
@@ -16,21 +17,40 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 st.set_page_config(page_title="Pharma Estimate & Master System", page_icon="💊", layout="wide")
 
-# Font fallback
+# --- Setup TrueType Font with Rupee (₹) Symbol Support ---
 FONT_REGULAR = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
-win_arial = "C:\\Windows\\Fonts\\arial.ttf"
-win_arial_bd = "C:\\Windows\\Fonts\\arialbd.ttf"
-if os.path.exists(win_arial) and os.path.exists(win_arial_bd):
-    try:
-        pdfmetrics.registerFont(TTFont('ArialCustom', win_arial))
-        pdfmetrics.registerFont(TTFont('ArialCustomBold', win_arial_bd))
-        FONT_REGULAR = 'ArialCustom'
-        FONT_BOLD = 'ArialCustomBold'
-    except Exception:
-        pass
 
-# --- Helper to remove trailing .0 from phone, age, and ID strings ---
+def setup_unicode_font():
+    global FONT_REGULAR, FONT_BOLD
+    font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+    os.makedirs(font_dir, exist_ok=True)
+    
+    font_reg_path = os.path.join(font_dir, "DejaVuSans.ttf")
+    font_bold_path = os.path.join(font_dir, "DejaVuSans-Bold.ttf")
+
+    # URL to download open-source DejaVuSans font (supports Indian Rupee ₹ symbol)
+    url_reg = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans.ttf"
+    url_bold = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans-Bold.ttf"
+
+    try:
+        if not os.path.exists(font_reg_path):
+            urllib.request.urlretrieve(url_reg, font_reg_path)
+        if not os.path.exists(font_bold_path):
+            urllib.request.urlretrieve(url_bold, font_bold_path)
+
+        pdfmetrics.registerFont(TTFont("DejaVu", font_reg_path))
+        pdfmetrics.registerFont(TTFont("DejaVu-Bold", font_bold_path))
+        FONT_REGULAR = "DejaVu"
+        FONT_BOLD = "DejaVu-Bold"
+    except Exception:
+        # Fallback to standard Helvetica if network is unreachable
+        FONT_REGULAR = "Helvetica"
+        FONT_BOLD = "Helvetica-Bold"
+
+setup_unicode_font()
+
+# --- Helper to clean trailing .0 ---
 def clean_int_str(val):
     if pd.isna(val) or val is None or str(val).strip() == "":
         return ""
@@ -162,12 +182,15 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
     save_sheet_data("estimate_items", df_items)
     return est_id
 
-# --- PDF Generator (Clean Decimals & Cloud-Safe Currency) ---
+# --- PDF Generator with Full Rupee (₹) Symbol Support ---
 def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subtotal, disc_type, disc_val, disc_amt, grand_total, est_number=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     elements = []
     settings = get_settings()
+
+    # Font symbol check (Uses ₹ if DejaVu loaded, else fallback to Rs.)
+    sym = "₹" if "DejaVu" in FONT_REGULAR else "Rs. "
 
     s_name = str(settings.get('store_name') or 'HEALTHCARE PHARMACY & CLINIC')
     s_addr = str(settings.get('store_address') or 'Main Market Road')
@@ -207,8 +230,7 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
     elements.append(meta_table)
     elements.append(Spacer(1, 12))
 
-    # Using 'Rs.' prevents font replacement black boxes on Linux / Cloud
-    table_data = [["Sr.", "Medicine & Salt", "Dosage / Instructions", "Billing Units", "Base (Rs.)", "Disc", "Net (Rs.)"]]
+    table_data = [["Sr.", "Medicine & Salt", "Dosage / Instructions", "Billing Units", f"Base ({sym})", "Disc", f"Net ({sym})"]]
     for idx, itm in enumerate(items, 1):
         med_label = f"<b>{str(itm['name'])}</b>"
         if itm.get('composition'):
@@ -219,7 +241,7 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
             dose_label += f"<br/><font size=7 color='#2563EB'>{str(itm['timing'])}</font>"
         dose_label += f" ({str(itm.get('days', 1))} days)"
 
-        disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get('disc_type') == "%" else f"Rs.{float(itm.get('disc_val', 0)):.0f}"
+        disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get('disc_type') == "%" else f"{sym}{float(itm.get('disc_val', 0)):.0f}"
         if float(itm.get('disc_val', 0)) == 0:
             disc_str = "-"
 
@@ -233,11 +255,11 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
             f"{float(itm.get('net_amount', 0.0)):.2f}"
         ])
 
-    table_data.append(["", "", "", "", "", "Subtotal:", f"Rs. {float(subtotal):.2f}"])
+    table_data.append(["", "", "", "", "", "Subtotal:", f"{sym} {float(subtotal):.2f}"])
     if disc_amt > 0:
-        disc_label = f"Bill Disc ({float(disc_val):.0f}%):" if disc_type == "%" else "Bill Discount:"
-        table_data.append(["", "", "", "", "", disc_label, f"-Rs. {float(disc_amt):.2f}"])
-    table_data.append(["", "", "", "", "", "Grand Total:", f"Rs. {float(grand_total):.2f}"])
+        disc_label = f"Bill Disc ({float(disc_val):.0f}%):" if disc_type == "%" else f"Bill Discount ({sym}):"
+        table_data.append(["", "", "", "", "", disc_label, f"-{sym} {float(disc_amt):.2f}"])
+    table_data.append(["", "", "", "", "", "Grand Total:", f"{sym} {float(grand_total):.2f}"])
 
     main_table = Table(table_data, colWidths=[24, 180, 120, 75, 55, 36, 55])
     main_table.setStyle(TableStyle([
@@ -375,9 +397,9 @@ with tab_estimate:
         
         c_m1, c_m2 = st.columns(2)
         with c_m1:
-            i_mrp = st.number_input("Pack MRP (Rs.)", min_value=0.0, value=mrp_val, step=0.5)
+            i_mrp = st.number_input("Pack MRP (₹)", min_value=0.0, value=mrp_val, step=0.5)
         with c_m2:
-            i_ptr = st.number_input("PTR / Net Purchase Cost (Rs.)", min_value=0.0, value=ptr_val, step=0.5)
+            i_ptr = st.number_input("PTR / Net Purchase Cost (₹)", min_value=0.0, value=ptr_val, step=0.5)
 
         st.markdown("**Dosage & Regimen**")
         d_c1, d_c2 = st.columns([1.6, 1])
@@ -412,7 +434,7 @@ with tab_estimate:
             disc_col1, disc_col2 = st.columns([1, 1.2])
             with disc_col1:
                 saved_it_dt = edit_item.get('disc_type', '%') if is_editing else "%"
-                item_disc_type = st.selectbox("Type", ["%", "Rs."], index=0 if saved_it_dt == "%" else 1, key="item_dt")
+                item_disc_type = st.selectbox("Type", ["%", "₹"], index=0 if saved_it_dt == "%" else 1, key="item_dt")
             with disc_col2:
                 saved_it_val = float(edit_item.get('disc_val', 0.0)) if is_editing else 0.0
                 item_disc_val = st.number_input("Item Disc", min_value=0.0, value=saved_it_val, step=1.0)
@@ -494,7 +516,7 @@ with tab_estimate:
                         disc_str = f" • Disc: {itm['disc_val']}{itm['disc_type']}" if float(itm.get('disc_val', 0)) > 0 else ""
                         st.caption(f"{itm['regimen']} for {itm['days']} days{time_str}{disc_str}")
                     with r2:
-                        st.markdown(f"**Rs. {itm['net_amount']:.2f}**")
+                        st.markdown(f"**₹{itm['net_amount']:.2f}**")
                     with r3:
                         b_edit, b_del = st.columns(2)
                         with b_edit:
@@ -514,7 +536,7 @@ with tab_estimate:
             # Bill Discount Logic
             c_disc1, c_disc2, c_tot = st.columns([0.8, 1.1, 1.4])
             with c_disc1:
-                disc_opts = ["%", "Rs."]
+                disc_opts = ["%", "₹"]
                 dt_index = 0 if st.session_state.overall_disc_type == "%" else 1
                 overall_disc_type = st.selectbox("Discount Type", disc_opts, index=dt_index, key="bill_dt_select")
                 st.session_state.overall_disc_type = overall_disc_type
@@ -530,7 +552,7 @@ with tab_estimate:
                 )
                 st.session_state.overall_disc_val = overall_disc_val
 
-            if overall_disc_type in ["Rs.", "₹"]:
+            if overall_disc_type == "₹":
                 overall_disc_amt = min(float(overall_disc_val), float(subtotal))
             else:
                 overall_disc_amt = (float(subtotal) * float(overall_disc_val)) / 100.0
@@ -538,11 +560,11 @@ with tab_estimate:
             grand_total = max(0.0, float(subtotal) - float(overall_disc_amt))
 
             with c_tot:
-                st.write(f"Subtotal: **Rs. {subtotal:,.2f}**")
+                st.write(f"Subtotal: **₹{subtotal:,.2f}**")
                 if overall_disc_amt > 0:
-                    disc_label = f"{overall_disc_val:.2f}%" if overall_disc_type == "%" else f"Rs. {overall_disc_val:.2f}"
-                    st.write(f"Discount ({disc_label}): **-Rs. {overall_disc_amt:,.2f}**")
-                st.markdown(f"### Grand Total: Rs. {grand_total:,.2f}")
+                    disc_label = f"{overall_disc_val:.2f}%" if overall_disc_type == "%" else f"₹{overall_disc_val:.2f}"
+                    st.write(f"Discount ({disc_label}): **-₹{overall_disc_amt:,.2f}**")
+                st.markdown(f"### Grand Total: ₹{grand_total:,.2f}")
 
             # PDF & WhatsApp Share
             pdf_buf = generate_pdf_estimate(
@@ -553,8 +575,8 @@ with tab_estimate:
 
             wa_text = f"*MEDICINE ESTIMATE*\nPatient: {patient_name or 'Valued Customer'}\n"
             for idx, itm in enumerate(st.session_state.current_estimate, 1):
-                wa_text += f"{idx}. {itm['name']} ({itm['billing_qty']}) - Rs. {itm['net_amount']:.2f}\n"
-            wa_text += f"\n*Total Amount Payable: Rs. {grand_total:.2f}*"
+                wa_text += f"{idx}. {itm['name']} ({itm['billing_qty']}) - ₹{itm['net_amount']:.2f}\n"
+            wa_text += f"\n*Total Amount Payable: ₹{grand_total:.2f}*"
             encoded_text = urllib.parse.quote(wa_text)
             
             clean_phone = "".join(filter(str.isdigit, clean_int_str(patient_phone)))
@@ -645,8 +667,8 @@ with tab_master:
         mm_types = ["Tablet", "Capsule", "Syrup", "Injection", "Ointment", "Drops"]
         mm_type = st.selectbox("Form", mm_types, key="mm_type")
         mm_pack = st.number_input("Pack Size", min_value=1, value=10, step=1, key="mm_pack")
-        mm_mrp = st.number_input("Pack MRP (Rs.)", min_value=0.0, value=100.0, step=0.5, key="mm_mrp")
-        mm_ptr = st.number_input("PTR (Rs.)", min_value=0.0, value=75.0, step=0.5, key="mm_ptr")
+        mm_mrp = st.number_input("Pack MRP (₹)", min_value=0.0, value=100.0, step=0.5, key="mm_mrp")
+        mm_ptr = st.number_input("PTR (₹)", min_value=0.0, value=75.0, step=0.5, key="mm_ptr")
 
         if st.button("Save to Google Sheet", use_container_width=True):
             if not str(mm_name).strip():
