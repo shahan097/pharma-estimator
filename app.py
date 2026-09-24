@@ -17,14 +17,14 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 st.set_page_config(page_title="Pharma Estimate & Master System", page_icon="💊", layout="wide")
 
-# --- Setup TrueType Font with Rupee (₹) Symbol Support ---
+# --- Setup TrueType Font with Guaranteed Rupee (₹) Symbol Support ---
 FONT_REGULAR = "Helvetica"
 FONT_BOLD = "Helvetica-Bold"
 
 def setup_unicode_font():
     global FONT_REGULAR, FONT_BOLD
 
-    # 1. Check standard Linux/Streamlit Cloud system font paths
+    # 1. Standard Linux / Streamlit Cloud system path (via packages.txt)
     linux_reg = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     linux_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
@@ -38,7 +38,20 @@ def setup_unicode_font():
         except Exception:
             pass
 
-    # 2. Check local fonts directory or download using browser User-Agent
+    # 2. Local Windows fonts fallback
+    win_arial = "C:\\Windows\\Fonts\\arial.ttf"
+    win_arial_bd = "C:\\Windows\\Fonts\\arialbd.ttf"
+    if os.path.exists(win_arial) and os.path.exists(win_arial_bd):
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVu", win_arial))
+            pdfmetrics.registerFont(TTFont("DejaVu-Bold", win_arial_bd))
+            FONT_REGULAR = "DejaVu"
+            FONT_BOLD = "DejaVu-Bold"
+            return
+        except Exception:
+            pass
+
+    # 3. Fallback download with browser headers
     font_dir = os.path.join(os.path.dirname(__file__), "fonts")
     os.makedirs(font_dir, exist_ok=True)
     font_reg_path = os.path.join(font_dir, "DejaVuSans.ttf")
@@ -221,14 +234,14 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
     save_sheet_data("estimate_items", df_items)
     return est_id
 
-# --- PDF Generator with Guaranteed Rupee (₹) Symbol Support ---
+# --- PDF Generator with Explicit Rupee (₹) Symbol Support ---
 def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subtotal, disc_type, disc_val, disc_amt, grand_total, est_number=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     elements = []
     settings = get_settings()
 
-    sym = "₹" if "DejaVu" in FONT_REGULAR else "Rs. "
+    sym = "₹"
 
     s_name = str(settings.get("store_name") or "HEALTHCARE PHARMACY & CLINIC")
     s_addr = str(settings.get("store_address") or "Main Market Road")
@@ -828,11 +841,11 @@ with tab_history:
                     })
 
                 h_pdf = generate_pdf_estimate(
-                    str(row.get("patient_name", "")), clean_int_str(row.get("patient_phone", "")),
-                    clean_int_str(row.get("patient_age", "")), str(row.get("patient_gender", "")),
+                    str(row.get("patient_name", "")), clean_int_str(row.get("patient_phone", "")), 
+                    clean_int_str(row.get("patient_age", "")), str(row.get("patient_gender", "")), 
                     str(row.get("doctor_name", "")), hist_items,
-                    float(row.get("subtotal", 0.0)), str(row.get("overall_discount_type", "%")),
-                    float(row.get("overall_discount_val", 0.0)), float(row.get("overall_discount_amt", 0.0)),
+                    float(row.get("subtotal", 0.0)), str(row.get("overall_discount_type", "%")), 
+                    float(row.get("overall_discount_val", 0.0)), float(row.get("overall_discount_amt", 0.0)), 
                     float(row.get("grand_total", 0.0)), est_number=sel_id
                 )
 
