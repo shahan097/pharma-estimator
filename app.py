@@ -52,19 +52,19 @@ def get_medicines():
 
 def upsert_medicine_gsheet(name, composition, med_type, pack_size, mrp, ptr):
     df = get_medicines()
-    name_clean = name.strip()
+    name_clean = str(name).strip()
     new_row = {
         "name": name_clean,
-        "composition": composition.strip(),
-        "type": med_type,
+        "composition": str(composition).strip(),
+        "type": str(med_type),
         "pack_size": int(pack_size),
         "mrp": float(mrp),
         "ptr": float(ptr)
     }
     
-    if not df.empty and name_clean in df["name"].values:
-        df.loc[df["name"] == name_clean, ["composition", "type", "pack_size", "mrp", "ptr"]] = [
-            composition.strip(), med_type, int(pack_size), float(mrp), float(ptr)
+    if not df.empty and name_clean in df["name"].astype(str).values:
+        df.loc[df["name"].astype(str) == name_clean, ["composition", "type", "pack_size", "mrp", "ptr"]] = [
+            str(composition).strip(), str(med_type), int(pack_size), float(mrp), float(ptr)
         ]
     else:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -72,14 +72,22 @@ def upsert_medicine_gsheet(name, composition, med_type, pack_size, mrp, ptr):
     save_sheet_data("medicines", df)
 
 def get_settings():
-    df = get_sheet_data("settings")
-    if df.empty:
-        return {
-            "store_name": "HEALTHCARE PHARMACY & CLINIC",
-            "store_address": "Main Market Road",
-            "store_contact": "+91 98765 43210"
-        }
-    return dict(zip(df["key"], df["value"]))
+    defaults = {
+        "store_name": "HEALTHCARE PHARMACY & CLINIC",
+        "store_address": "Main Market Road, Opp. Civil Hospital",
+        "store_contact": "+91 98765 43210"
+    }
+    try:
+        df = get_sheet_data("settings")
+        if df is not None and not df.empty and "key" in df.columns and "value" in df.columns:
+            for _, r in df.iterrows():
+                k = str(r["key"]).strip() if pd.notna(r["key"]) else ""
+                v = str(r["value"]).strip() if pd.notna(r["value"]) else ""
+                if k:
+                    defaults[k] = v
+    except Exception:
+        pass
+    return defaults
 
 # --- Estimate Save / Update Logic in Google Sheets ---
 def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, subtotal, disc_type, disc_val, disc_amt, grand_total, existing_id=None):
@@ -89,41 +97,47 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
 
     if existing_id:
         est_id = int(existing_id)
-        # Update estimate row
-        mask = df_est["id"] == est_id
-        df_est.loc[mask, ["patient_name", "patient_phone", "patient_age", "patient_gender", "doctor_name", "estimate_date", "subtotal", "overall_discount_type", "overall_discount_val", "overall_discount_amt", "grand_total"]] = [
-            p_name.strip(), str(p_phone).strip(), str(p_age).strip(), p_gender, d_name.strip(), today_str, subtotal, disc_type, disc_val, disc_amt, grand_total
-        ]
-        # Remove old line items
-        if not df_items.empty:
-            df_items = df_items[df_items["estimate_id"] != est_id]
+        if not df_est.empty and "id" in df_est.columns:
+            mask = df_est["id"].astype(int) == est_id
+            df_est.loc[mask, ["patient_name", "patient_phone", "patient_age", "patient_gender", "doctor_name", "estimate_date", "subtotal", "overall_discount_type", "overall_discount_val", "overall_discount_amt", "grand_total"]] = [
+                str(p_name).strip(), str(p_phone).strip(), str(p_age).strip(), str(p_gender), str(d_name).strip(), today_str, float(subtotal), str(disc_type), float(disc_val), float(disc_amt), float(grand_total)
+            ]
+        if not df_items.empty and "estimate_id" in df_items.columns:
+            df_items = df_items[df_items["estimate_id"].astype(int) != est_id]
     else:
-        est_id = 1 if df_est.empty else int(df_est["id"].max()) + 1
+        est_id = 1 if (df_est.empty or "id" not in df_est.columns) else int(df_est["id"].max()) + 1
         new_est = {
-            "id": est_id, "patient_name": p_name.strip(), "patient_phone": str(p_phone).strip(),
-            "patient_age": str(p_age).strip(), "patient_gender": p_gender, "doctor_name": d_name.strip(),
-            "estimate_date": today_str, "subtotal": subtotal, "overall_discount_type": disc_type,
-            "overall_discount_val": disc_val, "overall_discount_amt": disc_amt, "grand_total": grand_total
+            "id": est_id, 
+            "patient_name": str(p_name).strip(), 
+            "patient_phone": str(p_phone).strip(),
+            "patient_age": str(p_age).strip(), 
+            "patient_gender": str(p_gender), 
+            "doctor_name": str(d_name).strip(),
+            "estimate_date": today_str, 
+            "subtotal": float(subtotal), 
+            "overall_discount_type": str(disc_type),
+            "overall_discount_val": float(disc_val), 
+            "overall_discount_amt": float(disc_amt), 
+            "grand_total": float(grand_total)
         }
         df_est = pd.concat([df_est, pd.DataFrame([new_est])], ignore_index=True)
 
-    # Insert Line Items
     new_items = []
-    item_start_id = 1 if df_items.empty else int(df_items["id"].max()) + 1
+    item_start_id = 1 if (df_items.empty or "id" not in df_items.columns) else int(df_items["id"].max()) + 1
     for idx, itm in enumerate(items):
         new_items.append({
             "id": item_start_id + idx,
             "estimate_id": est_id,
-            "medicine_name": itm["name"],
-            "regimen": itm["regimen"],
-            "timing": itm["timing"],
-            "units_required": itm["units_needed"],
-            "billing_mode": itm["billing_mode"],
-            "billing_qty": itm["billing_qty"],
-            "base_amount": itm["base_amount"],
-            "discount_type": itm["disc_type"],
-            "discount_val": itm["disc_val"],
-            "net_amount": itm["net_amount"]
+            "medicine_name": str(itm["name"]),
+            "regimen": str(itm["regimen"]),
+            "timing": str(itm["timing"]),
+            "units_required": int(itm["units_needed"]),
+            "billing_mode": str(itm["billing_mode"]),
+            "billing_qty": str(itm["billing_qty"]),
+            "base_amount": float(itm["base_amount"]),
+            "discount_type": str(itm["disc_type"]),
+            "discount_val": float(itm["disc_val"]),
+            "net_amount": float(itm["net_amount"])
         })
     df_items = pd.concat([df_items, pd.DataFrame(new_items)], ignore_index=True)
 
@@ -131,18 +145,22 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
     save_sheet_data("estimate_items", df_items)
     return est_id
 
-# --- PDF Generator ---
+# --- PDF Generator (Bulletproof string formatting) ---
 def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subtotal, disc_type, disc_val, disc_amt, grand_total, est_number=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     elements = []
     settings = get_settings()
 
+    s_name = str(settings.get('store_name') or 'HEALTHCARE PHARMACY & CLINIC')
+    s_addr = str(settings.get('store_address') or 'Main Market Road')
+    s_phone = str(settings.get('store_contact') or '+91 98765 43210')
+
     store_title_style = ParagraphStyle('StoreTitle', fontName=FONT_BOLD, fontSize=16, leading=20, textColor=colors.HexColor("#1A365D"), alignment=1)
     store_sub_style = ParagraphStyle('StoreSub', fontName=FONT_REGULAR, fontSize=9, leading=12, textColor=colors.HexColor("#4A5568"), alignment=1)
     
-    elements.append(Paragraph(settings.get('store_name', 'PHARMACY ESTIMATE'), store_title_style))
-    elements.append(Paragraph(f"{settings.get('store_address', '')} | Ph: {settings.get('store_contact', '')}", store_sub_style))
+    elements.append(Paragraph(s_name, store_title_style))
+    elements.append(Paragraph(f"{s_addr} | Ph: {s_phone}", store_sub_style))
     elements.append(Spacer(1, 10))
     
     title_style = ParagraphStyle('EstTitle', fontName=FONT_BOLD, fontSize=12, leading=15, textColor=colors.HexColor("#2B6CB0"), alignment=1)
@@ -153,15 +171,15 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
     est_label = f"Estimate #{est_number}" if est_number else "Provisional Estimate"
     
     meta_p = ParagraphStyle('Meta', fontName=FONT_REGULAR, fontSize=9, leading=13)
-    p_info = f"<b>Patient:</b> {p_name or 'N/A'}"
+    p_info = f"<b>Patient:</b> {str(p_name or 'N/A')}"
     if p_age or p_gender:
-        p_info += f" ({p_age} yrs / {p_gender})"
+        p_info += f" ({str(p_age or '')} yrs / {str(p_gender or '')})"
     if p_phone:
-        p_info += f" | Mob: {p_phone}"
+        p_info += f" | Mob: {str(p_phone)}"
 
     meta_data = [
         [Paragraph(p_info, meta_p), Paragraph(f"<b>Date:</b> {today_str}", meta_p)],
-        [Paragraph(f"<b>Doctor:</b> {d_name or 'N/A'}", meta_p), Paragraph(f"<b>Ref No:</b> {est_label}", meta_p)]
+        [Paragraph(f"<b>Doctor:</b> {str(d_name or 'N/A')}", meta_p), Paragraph(f"<b>Ref No:</b> {est_label}", meta_p)]
     ]
     meta_table = Table(meta_data, colWidths=[360, 175])
     meta_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')]))
@@ -170,34 +188,34 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
 
     table_data = [["Sr.", "Medicine & Salt", "Dosage / Instructions", "Billing Units", "Base (₹)", "Disc", "Net (₹)"]]
     for idx, itm in enumerate(items, 1):
-        med_label = f"<b>{itm['name']}</b>"
+        med_label = f"<b>{str(itm['name'])}</b>"
         if itm.get('composition'):
-            med_label += f"<br/><font size=7 color='#64748B'>{itm['composition']}</font>"
+            med_label += f"<br/><font size=7 color='#64748B'>{str(itm['composition'])}</font>"
         
-        dose_label = f"{itm.get('regimen', '')}"
-        if itm.get('timing') and itm.get('timing') != "None":
-            dose_label += f"<br/><font size=7 color='#2563EB'>{itm['timing']}</font>"
-        dose_label += f" ({itm.get('days', 1)} days)"
+        dose_label = f"{str(itm.get('regimen', ''))}"
+        if itm.get('timing') and str(itm.get('timing')) != "None":
+            dose_label += f"<br/><font size=7 color='#2563EB'>{str(itm['timing'])}</font>"
+        dose_label += f" ({str(itm.get('days', 1))} days)"
 
-        disc_str = f"{itm.get('disc_val', 0):.0f}%" if itm.get('disc_type') == "%" else f"₹{itm.get('disc_val', 0):.0f}"
-        if itm.get('disc_val', 0) == 0:
+        disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get('disc_type') == "%" else f"₹{float(itm.get('disc_val', 0)):.0f}"
+        if float(itm.get('disc_val', 0)) == 0:
             disc_str = "-"
 
         table_data.append([
             str(idx),
             Paragraph(med_label, meta_p),
             Paragraph(dose_label, meta_p),
-            itm.get('billing_qty', ''),
-            f"₹{itm.get('base_amount', 0.0):.2f}",
+            str(itm.get('billing_qty', '')),
+            f"₹{float(itm.get('base_amount', 0.0)):.2f}",
             disc_str,
-            f"₹{itm.get('net_amount', 0.0):.2f}"
+            f"₹{float(itm.get('net_amount', 0.0)):.2f}"
         ])
 
-    table_data.append(["", "", "", "", "", "Subtotal:", f"₹{subtotal:.2f}"])
+    table_data.append(["", "", "", "", "", "Subtotal:", f"₹{float(subtotal):.2f}"])
     if disc_amt > 0:
-        disc_label = f"Bill Disc ({disc_val:.0f}%):" if disc_type == "%" else "Bill Discount (₹):"
-        table_data.append(["", "", "", "", "", disc_label, f"-₹{disc_amt:.2f}"])
-    table_data.append(["", "", "", "", "", "Grand Total:", f"₹{grand_total:.2f}"])
+        disc_label = f"Bill Disc ({float(disc_val):.0f}%):" if disc_type == "%" else "Bill Discount (₹):"
+        table_data.append(["", "", "", "", "", disc_label, f"-₹{float(disc_amt):.2f}"])
+    table_data.append(["", "", "", "", "", "Grand Total:", f"₹{float(grand_total):.2f}"])
 
     main_table = Table(table_data, colWidths=[24, 180, 120, 75, 50, 36, 50])
     main_table.setStyle(TableStyle([
@@ -301,17 +319,18 @@ with tab_estimate:
         med_df = get_medicines()
 
         if entry_method == "Search / Select Master" and not is_editing:
-            if not med_df.empty:
-                med_df["display_search"] = med_df["name"] + " | " + med_df["composition"].fillna("")
+            if not med_df.empty and "name" in med_df.columns:
+                med_df["composition"] = med_df["composition"].fillna("")
+                med_df["display_search"] = med_df["name"].astype(str) + " | " + med_df["composition"].astype(str)
                 selected_display = st.selectbox("Search by Brand or Composition/Salt", med_df["display_search"].tolist())
                 med_info = med_df[med_df["display_search"] == selected_display].iloc[0]
                 
-                name_val = med_info["name"]
+                name_val = str(med_info["name"])
                 comp_val = str(med_info["composition"]) if pd.notna(med_info["composition"]) else ""
-                type_val = med_info["type"]
-                pack_val = int(med_info["pack_size"])
-                mrp_val = float(med_info["mrp"])
-                ptr_val = float(med_info.get("ptr", 0.0))
+                type_val = str(med_info.get("type", "Tablet"))
+                pack_val = int(med_info["pack_size"]) if pd.notna(med_info["pack_size"]) else 10
+                mrp_val = float(med_info["mrp"]) if pd.notna(med_info["mrp"]) else 100.0
+                ptr_val = float(med_info.get("ptr", 0.0)) if pd.notna(med_info.get("ptr")) else 0.0
             else:
                 name_val, comp_val, type_val, pack_val, mrp_val, ptr_val = "", "", "Tablet", 10, 100.0, 0.0
         else:
@@ -383,7 +402,6 @@ with tab_estimate:
                 if not i_name.strip():
                     st.error("Please provide a medicine name.")
                 else:
-                    # Auto save / update in Google Sheets Master
                     upsert_medicine_gsheet(i_name, i_comp, i_type, i_pack, i_mrp, i_ptr)
                     
                     unit_rate = i_mrp / i_pack if i_pack > 0 else 0
@@ -401,23 +419,23 @@ with tab_estimate:
                     net_cost = max(0.0, base_cost - disc_amount)
 
                     payload = {
-                        "name": i_name.strip(),
-                        "composition": i_comp.strip(),
-                        "type": i_type,
-                        "pack_size": i_pack,
-                        "mrp": i_mrp,
-                        "ptr": i_ptr,
-                        "freq": custom_doses,
-                        "regimen": sel_regimen,
-                        "timing": sel_timing,
-                        "days": i_days,
-                        "units_needed": total_units,
-                        "billing_mode": i_mode,
-                        "billing_qty": billing_label,
+                        "name": str(i_name).strip(),
+                        "composition": str(i_comp).strip(),
+                        "type": str(i_type),
+                        "pack_size": int(i_pack),
+                        "mrp": float(i_mrp),
+                        "ptr": float(i_ptr),
+                        "freq": float(custom_doses),
+                        "regimen": str(sel_regimen),
+                        "timing": str(sel_timing),
+                        "days": int(i_days),
+                        "units_needed": int(total_units),
+                        "billing_mode": str(i_mode),
+                        "billing_qty": str(billing_label),
                         "base_amount": round(base_cost, 2),
                         "ptr_amount": round(ptr_cost, 2),
-                        "disc_type": item_disc_type,
-                        "disc_val": item_disc_val,
+                        "disc_type": str(item_disc_type),
+                        "disc_val": float(item_disc_val),
                         "net_amount": round(net_cost, 2)
                     }
 
@@ -450,8 +468,8 @@ with tab_estimate:
                     r1, r2, r3 = st.columns([2.5, 1.2, 0.8])
                     with r1:
                         st.markdown(f"**{idx + 1}. {itm['name']}** ({itm['billing_qty']})")
-                        time_str = f" • {itm['timing']}" if itm.get('timing') and itm['timing'] != "None" else ""
-                        disc_str = f" • Disc: {itm['disc_val']}{itm['disc_type']}" if itm.get('disc_val', 0) > 0 else ""
+                        time_str = f" • {itm['timing']}" if itm.get('timing') and str(itm['timing']) != "None" else ""
+                        disc_str = f" • Disc: {itm['disc_val']}{itm['disc_type']}" if float(itm.get('disc_val', 0)) > 0 else ""
                         st.caption(f"{itm['regimen']} for {itm['days']} days{time_str}{disc_str}")
                     with r2:
                         st.markdown(f"**₹{itm['net_amount']:.2f}**")
@@ -569,7 +587,7 @@ with tab_estimate:
                 s1, s2 = st.columns([1.5, 1])
                 with s1:
                     if st.button("💾 Save to Google Sheet", type="primary", use_container_width=True):
-                        if not patient_name.strip():
+                        if not str(patient_name).strip():
                             st.error("Please enter Patient Name before saving.")
                         else:
                             with st.spinner("Saving to Google Sheet..."):
@@ -609,7 +627,7 @@ with tab_master:
         mm_ptr = st.number_input("PTR (₹)", min_value=0.0, value=75.0, step=0.5, key="mm_ptr")
 
         if st.button("Save to Google Sheet", use_container_width=True):
-            if not mm_name.strip():
+            if not str(mm_name).strip():
                 st.error("Medicine Name is required.")
             else:
                 with st.spinner("Updating Google Sheet..."):
@@ -621,8 +639,9 @@ with tab_master:
         st.markdown("##### Current Catalog in Google Sheet")
         df_meds = get_medicines()
         if not df_meds.empty:
+            cols_show = [c for c in ["name", "composition", "type", "pack_size", "mrp", "ptr"] if c in df_meds.columns]
             st.dataframe(
-                df_meds[["name", "composition", "type", "pack_size", "mrp", "ptr"]],
+                df_meds[cols_show],
                 hide_index=True,
                 use_container_width=True
             )
@@ -650,7 +669,7 @@ with tab_history:
         if sel_id:
             row = estimates_df[estimates_df["id"] == sel_id].iloc[0]
             all_items_df = get_sheet_data("estimate_items")
-            items_df = all_items_df[all_items_df["estimate_id"] == sel_id] if not all_items_df.empty else pd.DataFrame()
+            items_df = all_items_df[all_items_df["estimate_id"] == sel_id] if (not all_items_df.empty and "estimate_id" in all_items_df.columns) else pd.DataFrame()
             
             st.write(f"**Items in Estimate #{sel_id}**")
             if not items_df.empty:
@@ -660,33 +679,33 @@ with tab_history:
             c_l, c_p = st.columns(2)
             with c_l:
                 if st.button("✏️ Load & Edit this Estimate", type="primary", use_container_width=True):
-                    meds_master = get_medicines().set_index("name").to_dict(orient="index")
+                    meds_master = get_medicines().set_index("name").to_dict(orient="index") if not get_medicines().empty else {}
                     loaded = []
                     for _, r in items_df.iterrows():
-                        m_name = r["medicine_name"]
+                        m_name = str(r["medicine_name"])
                         m_data = meds_master.get(m_name, {"composition": "", "type": "Tablet", "pack_size": 10, "mrp": 100.0, "ptr": 0.0})
                         
-                        reg_val = r.get("regimen", "") or "1-0-1 (Twice a day / BD)"
-                        time_val = r.get("timing", "") or "None"
+                        reg_val = str(r.get("regimen", "")) if pd.notna(r.get("regimen")) else "1-0-1 (Twice a day / BD)"
+                        time_val = str(r.get("timing", "")) if pd.notna(r.get("timing")) else "None"
                         units_req = int(r.get("units_required", 10))
                         
                         loaded.append({
                             "name": m_name,
-                            "composition": m_data.get("composition", ""),
-                            "type": m_data.get("type", "Tablet"),
-                            "pack_size": m_data.get("pack_size", 10),
-                            "mrp": m_data.get("mrp", 100.0),
-                            "ptr": m_data.get("ptr", 0.0),
-                            "freq": REGIMEN_MAP.get(reg_val, 2.0),
+                            "composition": str(m_data.get("composition", "")),
+                            "type": str(m_data.get("type", "Tablet")),
+                            "pack_size": int(m_data.get("pack_size", 10)),
+                            "mrp": float(m_data.get("mrp", 100.0)),
+                            "ptr": float(m_data.get("ptr", 0.0)),
+                            "freq": float(REGIMEN_MAP.get(reg_val, 2.0)),
                             "regimen": reg_val,
                             "timing": time_val,
                             "days": max(1, int(units_req / 2)),
                             "units_needed": units_req,
-                            "billing_mode": r.get("billing_mode", "Full Pack Rounding"),
-                            "billing_qty": r.get("billing_qty", ""),
+                            "billing_mode": str(r.get("billing_mode", "Full Pack Rounding")),
+                            "billing_qty": str(r.get("billing_qty", "")),
                             "base_amount": float(r.get("base_amount", 0.0)),
                             "ptr_amount": 0.0,
-                            "disc_type": r.get("discount_type", "%") or "%",
+                            "disc_type": str(r.get("discount_type", "%")) or "%",
                             "disc_val": float(r.get("discount_val", 0.0)),
                             "net_amount": float(r.get("net_amount", 0.0))
                         })
@@ -696,7 +715,7 @@ with tab_history:
                     st.session_state.age_input = str(row.get("patient_age", ""))
                     st.session_state.gender_input = str(row.get("patient_gender", "Male"))
                     st.session_state.doctor_input = str(row.get("doctor_name", ""))
-                    st.session_state.overall_disc_type = str(row.get("overall_discount_type", "%") or "%")
+                    st.session_state.overall_disc_type = str(row.get("overall_discount_type", "%")) or "%"
                     st.session_state.overall_disc_val = float(row.get("overall_discount_val", 0.0))
                     st.session_state.loaded_estimate_id = int(sel_id)
                     st.success(f"Estimate #{sel_id} loaded from Google Sheets! Switch to 'Create / Edit Estimate' tab.")
@@ -706,15 +725,15 @@ with tab_history:
                 hist_items = []
                 for _, r in items_df.iterrows():
                     hist_items.append({
-                        "name": r.get("medicine_name", ""),
+                        "name": str(r.get("medicine_name", "")),
                         "composition": "",
-                        "regimen": r.get("regimen", "") or "",
-                        "timing": r.get("timing", "") or "",
+                        "regimen": str(r.get("regimen", "")),
+                        "timing": str(r.get("timing", "")),
                         "days": max(1, int(r.get("units_required", 10) / 2)),
-                        "units_needed": r.get("units_required", 10),
-                        "billing_qty": r.get("billing_qty", ""),
+                        "units_needed": int(r.get("units_required", 10)),
+                        "billing_qty": str(r.get("billing_qty", "")),
                         "base_amount": float(r.get("base_amount", 0.0)),
-                        "disc_type": r.get("discount_type", "%") or "%",
+                        "disc_type": str(r.get("discount_type", "%")),
                         "disc_val": float(r.get("discount_val", 0.0)),
                         "net_amount": float(r.get("net_amount", 0.0))
                     })
