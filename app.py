@@ -29,7 +29,6 @@ def setup_unicode_font():
     font_reg_path = os.path.join(font_dir, "DejaVuSans.ttf")
     font_bold_path = os.path.join(font_dir, "DejaVuSans-Bold.ttf")
 
-    # URL to download open-source DejaVuSans font (supports Indian Rupee ₹ symbol)
     url_reg = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans.ttf"
     url_bold = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans-Bold.ttf"
 
@@ -44,7 +43,6 @@ def setup_unicode_font():
         FONT_REGULAR = "DejaVu"
         FONT_BOLD = "DejaVu-Bold"
     except Exception:
-        # Fallback to standard Helvetica if network is unreachable
         FONT_REGULAR = "Helvetica"
         FONT_BOLD = "Helvetica-Bold"
 
@@ -75,7 +73,24 @@ def get_sheet_data(worksheet_name):
 def save_sheet_data(worksheet_name, df):
     sheet_url = st.secrets["connections"]["gsheets"].get("spreadsheet")
     cleaned_df = df.fillna("")
-    conn.update(spreadsheet=sheet_url, worksheet=worksheet_name, data=cleaned_df)
+    
+    # Try high-level st-gsheets-connection update first
+    try:
+        conn.update(spreadsheet=sheet_url, worksheet=worksheet_name, data=cleaned_df)
+    except Exception:
+        # Fallback to direct native gspread write to avoid metadata/open errors
+        try:
+            client = conn._instance._client
+            sh = client.open_by_url(sheet_url)
+            try:
+                ws = sh.worksheet(worksheet_name)
+            except Exception:
+                ws = sh.add_worksheet(title=worksheet_name, rows="100", cols="20")
+            ws.clear()
+            data_matrix = [cleaned_df.columns.astype(str).tolist()] + cleaned_df.astype(str).values.tolist()
+            ws.update(data_matrix)
+        except Exception as e:
+            st.error(f"Google Sheet Save Error: {e}")
 
 # --- Master Operations ---
 def get_medicines():
@@ -96,7 +111,7 @@ def upsert_medicine_gsheet(name, composition, med_type, pack_size, mrp, ptr):
         "ptr": float(ptr)
     }
     
-    if not df.empty and name_clean in df["name"].astype(str).values:
+    if not df.empty and "name" in df.columns and name_clean in df["name"].astype(str).values:
         df.loc[df["name"].astype(str) == name_clean, ["composition", "type", "pack_size", "mrp", "ptr"]] = [
             str(composition).strip(), str(med_type), int(pack_size), float(mrp), float(ptr)
         ]
@@ -189,7 +204,6 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
     elements = []
     settings = get_settings()
 
-    # Font symbol check (Uses ₹ if DejaVu loaded, else fallback to Rs.)
     sym = "₹" if "DejaVu" in FONT_REGULAR else "Rs. "
 
     s_name = str(settings.get('store_name') or 'HEALTHCARE PHARMACY & CLINIC')
@@ -552,7 +566,7 @@ with tab_estimate:
                 )
                 st.session_state.overall_disc_val = overall_disc_val
 
-            if overall_disc_type == "₹":
+            if overall_disc_type in ["₹", "Rs."]:
                 overall_disc_amt = min(float(overall_disc_val), float(subtotal))
             else:
                 overall_disc_amt = (float(subtotal) * float(overall_disc_val)) / 100.0
