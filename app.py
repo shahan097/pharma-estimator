@@ -23,28 +23,52 @@ FONT_BOLD = "Helvetica-Bold"
 
 def setup_unicode_font():
     global FONT_REGULAR, FONT_BOLD
+
+    # 1. Check standard Linux/Streamlit Cloud system font paths
+    linux_reg = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    linux_bold = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+    if os.path.exists(linux_reg) and os.path.exists(linux_bold):
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVu", linux_reg))
+            pdfmetrics.registerFont(TTFont("DejaVu-Bold", linux_bold))
+            FONT_REGULAR = "DejaVu"
+            FONT_BOLD = "DejaVu-Bold"
+            return
+        except Exception:
+            pass
+
+    # 2. Check local fonts directory or download using browser User-Agent
     font_dir = os.path.join(os.path.dirname(__file__), "fonts")
     os.makedirs(font_dir, exist_ok=True)
-    
     font_reg_path = os.path.join(font_dir, "DejaVuSans.ttf")
     font_bold_path = os.path.join(font_dir, "DejaVuSans-Bold.ttf")
 
-    url_reg = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans.ttf"
-    url_bold = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans-Bold.ttf"
+    urls = {
+        font_reg_path: "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans.ttf",
+        font_bold_path: "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/resources/DejaVuSans-Bold.ttf"
+    }
 
-    try:
-        if not os.path.exists(font_reg_path):
-            urllib.request.urlretrieve(url_reg, font_reg_path)
-        if not os.path.exists(font_bold_path):
-            urllib.request.urlretrieve(url_bold, font_bold_path)
+    req_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-        pdfmetrics.registerFont(TTFont("DejaVu", font_reg_path))
-        pdfmetrics.registerFont(TTFont("DejaVu-Bold", font_bold_path))
-        FONT_REGULAR = "DejaVu"
-        FONT_BOLD = "DejaVu-Bold"
-    except Exception:
-        FONT_REGULAR = "Helvetica"
-        FONT_BOLD = "Helvetica-Bold"
+    for path, url in urls.items():
+        if not os.path.exists(path):
+            try:
+                req = urllib.request.Request(url, headers=req_headers)
+                with urllib.request.urlopen(req, timeout=10) as response, open(path, "wb") as out_file:
+                    out_file.write(response.read())
+            except Exception:
+                pass
+
+    if os.path.exists(font_reg_path) and os.path.exists(font_bold_path):
+        try:
+            pdfmetrics.registerFont(TTFont("DejaVu", font_reg_path))
+            pdfmetrics.registerFont(TTFont("DejaVu-Bold", font_bold_path))
+            FONT_REGULAR = "DejaVu"
+            FONT_BOLD = "DejaVu-Bold"
+        except Exception:
+            FONT_REGULAR = "Helvetica"
+            FONT_BOLD = "Helvetica-Bold"
 
 setup_unicode_font()
 
@@ -73,12 +97,12 @@ def get_sheet_data(worksheet_name):
 def save_sheet_data(worksheet_name, df):
     sheet_url = st.secrets["connections"]["gsheets"].get("spreadsheet")
     cleaned_df = df.fillna("")
-    
+
     # Try high-level st-gsheets-connection update first
     try:
         conn.update(spreadsheet=sheet_url, worksheet=worksheet_name, data=cleaned_df)
     except Exception:
-        # Fallback to direct native gspread write to avoid metadata/open errors
+        # Fallback to direct native gspread write
         try:
             client = conn._instance._client
             sh = client.open_by_url(sheet_url)
@@ -110,14 +134,14 @@ def upsert_medicine_gsheet(name, composition, med_type, pack_size, mrp, ptr):
         "mrp": float(mrp),
         "ptr": float(ptr)
     }
-    
+
     if not df.empty and "name" in df.columns and name_clean in df["name"].astype(str).values:
         df.loc[df["name"].astype(str) == name_clean, ["composition", "type", "pack_size", "mrp", "ptr"]] = [
             str(composition).strip(), str(med_type), int(pack_size), float(mrp), float(ptr)
         ]
     else:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    
+
     save_sheet_data("medicines", df)
 
 def get_settings():
@@ -159,17 +183,17 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
     else:
         est_id = 1 if (df_est.empty or "id" not in df_est.columns) else int(df_est["id"].astype(float).max()) + 1
         new_est = {
-            "id": est_id, 
-            "patient_name": str(p_name).strip(), 
+            "id": est_id,
+            "patient_name": str(p_name).strip(),
             "patient_phone": c_phone,
-            "patient_age": c_age, 
-            "patient_gender": str(p_gender), 
+            "patient_age": c_age,
+            "patient_gender": str(p_gender),
             "doctor_name": str(d_name).strip(),
-            "estimate_date": today_str, 
-            "subtotal": float(subtotal), 
+            "estimate_date": today_str,
+            "subtotal": float(subtotal),
             "overall_discount_type": str(disc_type),
-            "overall_discount_val": float(disc_val), 
-            "overall_discount_amt": float(disc_amt), 
+            "overall_discount_val": float(disc_val),
+            "overall_discount_amt": float(disc_amt),
             "grand_total": float(grand_total)
         }
         df_est = pd.concat([df_est, pd.DataFrame([new_est])], ignore_index=True)
@@ -197,7 +221,7 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
     save_sheet_data("estimate_items", df_items)
     return est_id
 
-# --- PDF Generator with Full Rupee (₹) Symbol Support ---
+# --- PDF Generator with Guaranteed Rupee (₹) Symbol Support ---
 def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subtotal, disc_type, disc_val, disc_amt, grand_total, est_number=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -206,29 +230,29 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
 
     sym = "₹" if "DejaVu" in FONT_REGULAR else "Rs. "
 
-    s_name = str(settings.get('store_name') or 'HEALTHCARE PHARMACY & CLINIC')
-    s_addr = str(settings.get('store_address') or 'Main Market Road')
-    s_phone = str(settings.get('store_contact') or '+91 98765 43210')
+    s_name = str(settings.get("store_name") or "HEALTHCARE PHARMACY & CLINIC")
+    s_addr = str(settings.get("store_address") or "Main Market Road")
+    s_phone = str(settings.get("store_contact") or "+91 98765 43210")
 
-    store_title_style = ParagraphStyle('StoreTitle', fontName=FONT_BOLD, fontSize=16, leading=20, textColor=colors.HexColor("#1A365D"), alignment=1)
-    store_sub_style = ParagraphStyle('StoreSub', fontName=FONT_REGULAR, fontSize=9, leading=12, textColor=colors.HexColor("#4A5568"), alignment=1)
-    
+    store_title_style = ParagraphStyle("StoreTitle", fontName=FONT_BOLD, fontSize=16, leading=20, textColor=colors.HexColor("#1A365D"), alignment=1)
+    store_sub_style = ParagraphStyle("StoreSub", fontName=FONT_REGULAR, fontSize=9, leading=12, textColor=colors.HexColor("#4A5568"), alignment=1)
+
     elements.append(Paragraph(s_name, store_title_style))
     elements.append(Paragraph(f"{s_addr} | Ph: {s_phone}", store_sub_style))
     elements.append(Spacer(1, 10))
-    
-    title_style = ParagraphStyle('EstTitle', fontName=FONT_BOLD, fontSize=12, leading=15, textColor=colors.HexColor("#2B6CB0"), alignment=1)
+
+    title_style = ParagraphStyle("EstTitle", fontName=FONT_BOLD, fontSize=12, leading=15, textColor=colors.HexColor("#2B6CB0"), alignment=1)
     elements.append(Paragraph("MEDICINE ESTIMATE & PRESCRIPTION BREAKDOWN", title_style))
     elements.append(Spacer(1, 12))
 
     today_str = date.today().strftime("%d-%m-%Y")
     clean_est_no = clean_int_str(est_number)
     est_label = f"Estimate #{clean_est_no}" if clean_est_no else "Provisional Estimate"
-    
+
     c_age = clean_int_str(p_age)
     c_phone = clean_int_str(p_phone)
 
-    meta_p = ParagraphStyle('Meta', fontName=FONT_REGULAR, fontSize=9, leading=13)
+    meta_p = ParagraphStyle("Meta", fontName=FONT_REGULAR, fontSize=9, leading=13)
     p_info = f"<b>Patient:</b> {str(p_name or 'N/A')}"
     if c_age or p_gender:
         p_info += f" ({c_age} yrs / {str(p_gender or '')})"
@@ -240,30 +264,30 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
         [Paragraph(f"<b>Doctor:</b> {str(d_name or 'N/A')}", meta_p), Paragraph(f"<b>Ref No:</b> {est_label}", meta_p)]
     ]
     meta_table = Table(meta_data, colWidths=[360, 175])
-    meta_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')]))
+    meta_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     elements.append(meta_table)
     elements.append(Spacer(1, 12))
 
     table_data = [["Sr.", "Medicine & Salt", "Dosage / Instructions", "Billing Units", f"Base ({sym})", "Disc", f"Net ({sym})"]]
     for idx, itm in enumerate(items, 1):
         med_label = f"<b>{str(itm['name'])}</b>"
-        if itm.get('composition'):
+        if itm.get("composition"):
             med_label += f"<br/><font size=7 color='#64748B'>{str(itm['composition'])}</font>"
-        
+
         dose_label = f"{str(itm.get('regimen', ''))}"
-        if itm.get('timing') and str(itm.get('timing')) != "None":
+        if itm.get("timing") and str(itm.get("timing")) != "None":
             dose_label += f"<br/><font size=7 color='#2563EB'>{str(itm['timing'])}</font>"
         dose_label += f" ({str(itm.get('days', 1))} days)"
 
-        disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get('disc_type') == "%" else f"{sym}{float(itm.get('disc_val', 0)):.0f}"
-        if float(itm.get('disc_val', 0)) == 0:
+        disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get("disc_type") == "%" else f"{sym}{float(itm.get('disc_val', 0)):.0f}"
+        if float(itm.get("disc_val", 0)) == 0:
             disc_str = "-"
 
         table_data.append([
             str(idx),
             Paragraph(med_label, meta_p),
             Paragraph(dose_label, meta_p),
-            str(itm.get('billing_qty', '')),
+            str(itm.get("billing_qty", "")),
             f"{float(itm.get('base_amount', 0.0)):.2f}",
             disc_str,
             f"{float(itm.get('net_amount', 0.0)):.2f}"
@@ -277,18 +301,18 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
 
     main_table = Table(table_data, colWidths=[24, 180, 120, 75, 55, 36, 55])
     main_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2B6CB0")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, -1), FONT_REGULAR),
-        ('FONTNAME', (0, 0), (-1, 0), FONT_BOLD),
-        ('FONTSIZE', (0, 0), (-1, -1), 8.5),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ALIGN', (1, 1), (2, -1), 'LEFT'),
-        ('ALIGN', (4, 1), (-1, -1), 'RIGHT'),
-        ('GRID', (0, 0), (-1, len(items)), 0.5, colors.HexColor("#CBD5E1")),
-        ('FONTNAME', (-2, -3), (-1, -1), FONT_BOLD),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2B6CB0")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, -1), FONT_REGULAR),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (1, 1), (2, -1), "LEFT"),
+        ("ALIGN", (4, 1), (-1, -1), "RIGHT"),
+        ("GRID", (0, 0), (-1, len(items)), 0.5, colors.HexColor("#CBD5E1")),
+        ("FONTNAME", (-2, -3), (-1, -1), FONT_BOLD),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     elements.append(main_table)
     doc.build(elements)
@@ -382,7 +406,7 @@ with tab_estimate:
                 med_df["display_search"] = med_df["name"].astype(str) + " | " + med_df["composition"].astype(str)
                 selected_display = st.selectbox("Search by Brand or Composition/Salt", med_df["display_search"].tolist())
                 med_info = med_df[med_df["display_search"] == selected_display].iloc[0]
-                
+
                 name_val = str(med_info["name"])
                 comp_val = str(med_info["composition"]) if pd.notna(med_info["composition"]) else ""
                 type_val = str(med_info.get("type", "Tablet"))
@@ -392,23 +416,23 @@ with tab_estimate:
             else:
                 name_val, comp_val, type_val, pack_val, mrp_val, ptr_val = "", "", "Tablet", 10, 100.0, 0.0
         else:
-            name_val = edit_item['name'] if is_editing else ""
-            comp_val = edit_item.get('composition', '') if is_editing else ""
-            type_val = edit_item['type'] if is_editing else "Tablet"
-            pack_val = edit_item['pack_size'] if is_editing else 10
-            mrp_val = edit_item['mrp'] if is_editing else 100.0
-            ptr_val = edit_item.get('ptr', 0.0) if is_editing else 0.0
+            name_val = edit_item["name"] if is_editing else ""
+            comp_val = edit_item.get("composition", "") if is_editing else ""
+            type_val = edit_item["type"] if is_editing else "Tablet"
+            pack_val = edit_item["pack_size"] if is_editing else 10
+            mrp_val = edit_item["mrp"] if is_editing else 100.0
+            ptr_val = edit_item.get("ptr", 0.0) if is_editing else 0.0
 
         i_name = st.text_input("Medicine Brand Name", value=name_val)
         i_comp = st.text_input("Composition / Salt", value=comp_val, placeholder="e.g. Amoxicillin + Clavulanic Acid")
-        
+
         c_t1, c_t2 = st.columns(2)
         with c_t1:
             types = ["Tablet", "Capsule", "Syrup", "Injection", "Ointment", "Drops"]
             i_type = st.selectbox("Form", types, index=types.index(type_val) if type_val in types else 0)
         with c_t2:
             i_pack = st.number_input("Pack Size", min_value=1, value=pack_val, step=1)
-        
+
         c_m1, c_m2 = st.columns(2)
         with c_m1:
             i_mrp = st.number_input("Pack MRP (₹)", min_value=0.0, value=mrp_val, step=0.5)
@@ -419,11 +443,11 @@ with tab_estimate:
         d_c1, d_c2 = st.columns([1.6, 1])
         with d_c1:
             regimen_keys = list(REGIMEN_MAP.keys())
-            saved_reg = edit_item.get('regimen', regimen_keys[0]) if is_editing else regimen_keys[0]
+            saved_reg = edit_item.get("regimen", regimen_keys[0]) if is_editing else regimen_keys[0]
             sel_regimen = st.selectbox("Prescription Code", regimen_keys, index=regimen_keys.index(saved_reg) if saved_reg in regimen_keys else 0)
         with d_c2:
             if sel_regimen == "Custom / SOS":
-                custom_doses = st.number_input("Doses/Day", min_value=0.5, value=float(edit_item['freq']) if is_editing else 1.0, step=0.5)
+                custom_doses = st.number_input("Doses/Day", min_value=0.5, value=float(edit_item["freq"]) if is_editing else 1.0, step=0.5)
             else:
                 custom_doses = REGIMEN_MAP[sel_regimen]
                 st.write(f"Doses: **{custom_doses}/day**")
@@ -431,10 +455,10 @@ with tab_estimate:
         t_c1, t_c2 = st.columns([1.2, 1.2])
         with t_c1:
             timings = ["None", "After Food (PC)", "Before Food (AC)", "With Food", "Empty Stomach", "At Bedtime"]
-            saved_time = edit_item.get('timing', 'None') if is_editing else "None"
+            saved_time = edit_item.get("timing", "None") if is_editing else "None"
             sel_timing = st.selectbox("Meal Timing", timings, index=timings.index(saved_time) if saved_time in timings else 0)
         with t_c2:
-            i_days = st.number_input("Course Days", min_value=1, value=int(edit_item['days']) if is_editing else 5, step=1)
+            i_days = st.number_input("Course Days", min_value=1, value=int(edit_item["days"]) if is_editing else 5, step=1)
 
         total_units = math.ceil(custom_doses * i_days)
         st.caption(f"Calculated Total Consumption: **{total_units} units**")
@@ -442,15 +466,15 @@ with tab_estimate:
         b_c1, b_c2 = st.columns([1.3, 1])
         with b_c1:
             mode_opts = ["Full Pack Rounding", "Allow Cutting / Loose Units"]
-            saved_mode = 0 if not is_editing or edit_item['billing_mode'] == "Full Pack Rounding" else 1
+            saved_mode = 0 if not is_editing or edit_item["billing_mode"] == "Full Pack Rounding" else 1
             i_mode = st.radio("Billing Mode", mode_opts, index=saved_mode, horizontal=True)
         with b_c2:
             disc_col1, disc_col2 = st.columns([1, 1.2])
             with disc_col1:
-                saved_it_dt = edit_item.get('disc_type', '%') if is_editing else "%"
+                saved_it_dt = edit_item.get("disc_type", "%") if is_editing else "%"
                 item_disc_type = st.selectbox("Type", ["%", "₹"], index=0 if saved_it_dt == "%" else 1, key="item_dt")
             with disc_col2:
-                saved_it_val = float(edit_item.get('disc_val', 0.0)) if is_editing else 0.0
+                saved_it_val = float(edit_item.get("disc_val", 0.0)) if is_editing else 0.0
                 item_disc_val = st.number_input("Item Disc", min_value=0.0, value=saved_it_val, step=1.0)
 
         btn_c1, btn_c2 = st.columns(2)
@@ -461,7 +485,7 @@ with tab_estimate:
                     st.error("Please provide a medicine name.")
                 else:
                     upsert_medicine_gsheet(i_name, i_comp, i_type, i_pack, i_mrp, i_ptr)
-                    
+
                     unit_rate = i_mrp / i_pack if i_pack > 0 else 0
                     if i_mode == "Full Pack Rounding":
                         packs = math.ceil(total_units / i_pack)
@@ -519,15 +543,15 @@ with tab_estimate:
             total_ptr_cost = 0.0
 
             for idx, itm in enumerate(st.session_state.current_estimate):
-                subtotal += itm['net_amount']
-                total_ptr_cost += itm.get('ptr_amount', 0.0)
-                
+                subtotal += itm["net_amount"]
+                total_ptr_cost += itm.get("ptr_amount", 0.0)
+
                 with st.container():
                     r1, r2, r3 = st.columns([2.5, 1.2, 0.8])
                     with r1:
                         st.markdown(f"**{idx + 1}. {itm['name']}** ({itm['billing_qty']})")
-                        time_str = f" • {itm['timing']}" if itm.get('timing') and str(itm['timing']) != "None" else ""
-                        disc_str = f" • Disc: {itm['disc_val']}{itm['disc_type']}" if float(itm.get('disc_val', 0)) > 0 else ""
+                        time_str = f" • {itm['timing']}" if itm.get("timing") and str(itm["timing"]) != "None" else ""
+                        disc_str = f" • Disc: {itm['disc_val']}{itm['disc_type']}" if float(itm.get("disc_val", 0)) > 0 else ""
                         st.caption(f"{itm['regimen']} for {itm['days']} days{time_str}{disc_str}")
                     with r2:
                         st.markdown(f"**₹{itm['net_amount']:.2f}**")
@@ -558,10 +582,10 @@ with tab_estimate:
             with c_disc2:
                 step_val = 1.0 if overall_disc_type == "%" else 5.0
                 overall_disc_val = st.number_input(
-                    f"Bill Discount ({overall_disc_type})", 
-                    min_value=0.0, 
-                    value=float(st.session_state.overall_disc_val), 
-                    step=step_val, 
+                    f"Bill Discount ({overall_disc_type})",
+                    min_value=0.0,
+                    value=float(st.session_state.overall_disc_val),
+                    step=step_val,
                     key="bill_dv_input"
                 )
                 st.session_state.overall_disc_val = overall_disc_val
@@ -592,7 +616,7 @@ with tab_estimate:
                 wa_text += f"{idx}. {itm['name']} ({itm['billing_qty']}) - ₹{itm['net_amount']:.2f}\n"
             wa_text += f"\n*Total Amount Payable: ₹{grand_total:.2f}*"
             encoded_text = urllib.parse.quote(wa_text)
-            
+
             clean_phone = "".join(filter(str.isdigit, clean_int_str(patient_phone)))
             if len(clean_phone) == 10:
                 clean_phone = "91" + clean_phone
@@ -712,7 +736,7 @@ with tab_master:
 with tab_history:
     st.subheader("Saved Estimates in Google Sheets")
     estimates_df = get_sheet_data("estimates")
-    
+
     if estimates_df.empty:
         st.info("No saved estimates in Google Sheet.")
     else:
@@ -722,25 +746,25 @@ with tab_history:
             formatted_df["id"] = formatted_df["id"].apply(clean_int_str)
         if "patient_phone" in formatted_df.columns:
             formatted_df["patient_phone"] = formatted_df["patient_phone"].apply(clean_int_str)
-            
+
         st.dataframe(
             formatted_df.sort_values(by="id", ascending=False),
             hide_index=True,
             use_container_width=True
         )
-        
+
         sel_id_raw = st.selectbox("Select Estimate # to inspect, load & edit", estimates_df["id"].tolist())
         if sel_id_raw:
             sel_id = int(float(sel_id_raw))
             row = estimates_df[estimates_df["id"].astype(float).astype(int) == sel_id].iloc[0]
             all_items_df = get_sheet_data("estimate_items")
             items_df = all_items_df[all_items_df["estimate_id"].astype(float).astype(int) == sel_id] if (not all_items_df.empty and "estimate_id" in all_items_df.columns) else pd.DataFrame()
-            
+
             st.write(f"**Items in Estimate #{clean_int_str(sel_id)}**")
             if not items_df.empty:
                 summary_cols = [c for c in ["medicine_name", "regimen", "timing", "units_required", "billing_mode", "billing_qty", "base_amount", "discount_val", "net_amount"] if c in items_df.columns]
                 st.dataframe(items_df[summary_cols], hide_index=True, use_container_width=True)
-            
+
             c_l, c_p = st.columns(2)
             with c_l:
                 if st.button("✏️ Load & Edit this Estimate", type="primary", use_container_width=True):
@@ -749,11 +773,11 @@ with tab_history:
                     for _, r in items_df.iterrows():
                         m_name = str(r["medicine_name"])
                         m_data = meds_master.get(m_name, {"composition": "", "type": "Tablet", "pack_size": 10, "mrp": 100.0, "ptr": 0.0})
-                        
+
                         reg_val = str(r.get("regimen", "")) if pd.notna(r.get("regimen")) else "1-0-1 (Twice a day / BD)"
                         time_val = str(r.get("timing", "")) if pd.notna(r.get("timing")) else "None"
                         units_req = int(float(r.get("units_required", 10)))
-                        
+
                         loaded.append({
                             "name": m_name,
                             "composition": str(m_data.get("composition", "")),
@@ -802,16 +826,16 @@ with tab_history:
                         "disc_val": float(r.get("discount_val", 0.0)),
                         "net_amount": float(r.get("net_amount", 0.0))
                     })
-                
+
                 h_pdf = generate_pdf_estimate(
-                    str(row.get("patient_name", "")), clean_int_str(row.get("patient_phone", "")), 
-                    clean_int_str(row.get("patient_age", "")), str(row.get("patient_gender", "")), 
+                    str(row.get("patient_name", "")), clean_int_str(row.get("patient_phone", "")),
+                    clean_int_str(row.get("patient_age", "")), str(row.get("patient_gender", "")),
                     str(row.get("doctor_name", "")), hist_items,
-                    float(row.get("subtotal", 0.0)), str(row.get("overall_discount_type", "%")), 
-                    float(row.get("overall_discount_val", 0.0)), float(row.get("overall_discount_amt", 0.0)), 
+                    float(row.get("subtotal", 0.0)), str(row.get("overall_discount_type", "%")),
+                    float(row.get("overall_discount_val", 0.0)), float(row.get("overall_discount_amt", 0.0)),
                     float(row.get("grand_total", 0.0)), est_number=sel_id
                 )
-                
+
                 st.download_button(
                     label=f"📄 Download PDF (#{clean_int_str(sel_id)})",
                     data=h_pdf,
