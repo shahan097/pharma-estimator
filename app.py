@@ -30,18 +30,32 @@ if os.path.exists(win_arial) and os.path.exists(win_arial_bd):
     except Exception:
         pass
 
+# --- Helper to remove trailing .0 from phone, age, and ID strings ---
+def clean_int_str(val):
+    if pd.isna(val) or val is None or str(val).strip() == "":
+        return ""
+    try:
+        f = float(val)
+        return str(int(f)) if f.is_integer() else str(f)
+    except Exception:
+        s = str(val).strip()
+        return s[:-2] if s.endswith(".0") else s
+
 # --- Google Sheets Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_sheet_data(worksheet_name):
     try:
-        df = conn.read(worksheet=worksheet_name, ttl="0s")
+        sheet_url = st.secrets["connections"]["gsheets"].get("spreadsheet")
+        df = conn.read(spreadsheet=sheet_url, worksheet=worksheet_name, ttl="0s")
         return df.dropna(how="all") if df is not None else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 def save_sheet_data(worksheet_name, df):
-    conn.update(worksheet=worksheet_name, data=df)
+    sheet_url = st.secrets["connections"]["gsheets"].get("spreadsheet")
+    cleaned_df = df.fillna("")
+    conn.update(spreadsheet=sheet_url, worksheet=worksheet_name, data=cleaned_df)
 
 # --- Master Operations ---
 def get_medicines():
@@ -95,22 +109,25 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
     df_items = get_sheet_data("estimate_items")
     today_str = date.today().strftime("%d-%m-%Y")
 
+    c_phone = clean_int_str(p_phone)
+    c_age = clean_int_str(p_age)
+
     if existing_id:
         est_id = int(existing_id)
         if not df_est.empty and "id" in df_est.columns:
-            mask = df_est["id"].astype(int) == est_id
+            mask = df_est["id"].astype(float).astype(int) == est_id
             df_est.loc[mask, ["patient_name", "patient_phone", "patient_age", "patient_gender", "doctor_name", "estimate_date", "subtotal", "overall_discount_type", "overall_discount_val", "overall_discount_amt", "grand_total"]] = [
-                str(p_name).strip(), str(p_phone).strip(), str(p_age).strip(), str(p_gender), str(d_name).strip(), today_str, float(subtotal), str(disc_type), float(disc_val), float(disc_amt), float(grand_total)
+                str(p_name).strip(), c_phone, c_age, str(p_gender), str(d_name).strip(), today_str, float(subtotal), str(disc_type), float(disc_val), float(disc_amt), float(grand_total)
             ]
         if not df_items.empty and "estimate_id" in df_items.columns:
-            df_items = df_items[df_items["estimate_id"].astype(int) != est_id]
+            df_items = df_items[df_items["estimate_id"].astype(float).astype(int) != est_id]
     else:
-        est_id = 1 if (df_est.empty or "id" not in df_est.columns) else int(df_est["id"].max()) + 1
+        est_id = 1 if (df_est.empty or "id" not in df_est.columns) else int(df_est["id"].astype(float).max()) + 1
         new_est = {
             "id": est_id, 
             "patient_name": str(p_name).strip(), 
-            "patient_phone": str(p_phone).strip(),
-            "patient_age": str(p_age).strip(), 
+            "patient_phone": c_phone,
+            "patient_age": c_age, 
             "patient_gender": str(p_gender), 
             "doctor_name": str(d_name).strip(),
             "estimate_date": today_str, 
@@ -123,7 +140,7 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
         df_est = pd.concat([df_est, pd.DataFrame([new_est])], ignore_index=True)
 
     new_items = []
-    item_start_id = 1 if (df_items.empty or "id" not in df_items.columns) else int(df_items["id"].max()) + 1
+    item_start_id = 1 if (df_items.empty or "id" not in df_items.columns) else int(df_items["id"].astype(float).max()) + 1
     for idx, itm in enumerate(items):
         new_items.append({
             "id": item_start_id + idx,
@@ -145,7 +162,7 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
     save_sheet_data("estimate_items", df_items)
     return est_id
 
-# --- PDF Generator (Bulletproof string formatting) ---
+# --- PDF Generator (Clean Decimals & Cloud-Safe Currency) ---
 def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subtotal, disc_type, disc_val, disc_amt, grand_total, est_number=None):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
@@ -168,14 +185,18 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
     elements.append(Spacer(1, 12))
 
     today_str = date.today().strftime("%d-%m-%Y")
-    est_label = f"Estimate #{est_number}" if est_number else "Provisional Estimate"
+    clean_est_no = clean_int_str(est_number)
+    est_label = f"Estimate #{clean_est_no}" if clean_est_no else "Provisional Estimate"
     
+    c_age = clean_int_str(p_age)
+    c_phone = clean_int_str(p_phone)
+
     meta_p = ParagraphStyle('Meta', fontName=FONT_REGULAR, fontSize=9, leading=13)
     p_info = f"<b>Patient:</b> {str(p_name or 'N/A')}"
-    if p_age or p_gender:
-        p_info += f" ({str(p_age or '')} yrs / {str(p_gender or '')})"
-    if p_phone:
-        p_info += f" | Mob: {str(p_phone)}"
+    if c_age or p_gender:
+        p_info += f" ({c_age} yrs / {str(p_gender or '')})"
+    if c_phone:
+        p_info += f" | Mob: {c_phone}"
 
     meta_data = [
         [Paragraph(p_info, meta_p), Paragraph(f"<b>Date:</b> {today_str}", meta_p)],
@@ -186,7 +207,8 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
     elements.append(meta_table)
     elements.append(Spacer(1, 12))
 
-    table_data = [["Sr.", "Medicine & Salt", "Dosage / Instructions", "Billing Units", "Base (₹)", "Disc", "Net (₹)"]]
+    # Using 'Rs.' prevents font replacement black boxes on Linux / Cloud
+    table_data = [["Sr.", "Medicine & Salt", "Dosage / Instructions", "Billing Units", "Base (Rs.)", "Disc", "Net (Rs.)"]]
     for idx, itm in enumerate(items, 1):
         med_label = f"<b>{str(itm['name'])}</b>"
         if itm.get('composition'):
@@ -197,7 +219,7 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
             dose_label += f"<br/><font size=7 color='#2563EB'>{str(itm['timing'])}</font>"
         dose_label += f" ({str(itm.get('days', 1))} days)"
 
-        disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get('disc_type') == "%" else f"₹{float(itm.get('disc_val', 0)):.0f}"
+        disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get('disc_type') == "%" else f"Rs.{float(itm.get('disc_val', 0)):.0f}"
         if float(itm.get('disc_val', 0)) == 0:
             disc_str = "-"
 
@@ -206,18 +228,18 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
             Paragraph(med_label, meta_p),
             Paragraph(dose_label, meta_p),
             str(itm.get('billing_qty', '')),
-            f"₹{float(itm.get('base_amount', 0.0)):.2f}",
+            f"{float(itm.get('base_amount', 0.0)):.2f}",
             disc_str,
-            f"₹{float(itm.get('net_amount', 0.0)):.2f}"
+            f"{float(itm.get('net_amount', 0.0)):.2f}"
         ])
 
-    table_data.append(["", "", "", "", "", "Subtotal:", f"₹{float(subtotal):.2f}"])
+    table_data.append(["", "", "", "", "", "Subtotal:", f"Rs. {float(subtotal):.2f}"])
     if disc_amt > 0:
-        disc_label = f"Bill Disc ({float(disc_val):.0f}%):" if disc_type == "%" else "Bill Discount (₹):"
-        table_data.append(["", "", "", "", "", disc_label, f"-₹{float(disc_amt):.2f}"])
-    table_data.append(["", "", "", "", "", "Grand Total:", f"₹{float(grand_total):.2f}"])
+        disc_label = f"Bill Disc ({float(disc_val):.0f}%):" if disc_type == "%" else "Bill Discount:"
+        table_data.append(["", "", "", "", "", disc_label, f"-Rs. {float(disc_amt):.2f}"])
+    table_data.append(["", "", "", "", "", "Grand Total:", f"Rs. {float(grand_total):.2f}"])
 
-    main_table = Table(table_data, colWidths=[24, 180, 120, 75, 50, 36, 50])
+    main_table = Table(table_data, colWidths=[24, 180, 120, 75, 55, 36, 55])
     main_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2B6CB0")),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -280,7 +302,7 @@ tab_estimate, tab_master, tab_history = st.tabs([
 # -------------------------------------------------------------
 with tab_estimate:
     if st.session_state.loaded_estimate_id:
-        st.warning(f"✏️ **Editing Saved Estimate #{st.session_state.loaded_estimate_id}** from Google Sheets.")
+        st.warning(f"✏️ **Editing Saved Estimate #{clean_int_str(st.session_state.loaded_estimate_id)}** from Google Sheets.")
 
     st.markdown("##### 👤 Patient & Doctor Details")
     p1, p2, p3, p4, p5 = st.columns([1.5, 1.2, 0.8, 0.8, 1.4])
@@ -288,10 +310,10 @@ with tab_estimate:
         patient_name = st.text_input("Patient Name", value=st.session_state.patient_input, placeholder="e.g. Ramesh Kumar")
         st.session_state.patient_input = patient_name
     with p2:
-        patient_phone = st.text_input("Mobile No (for WhatsApp)", value=st.session_state.phone_input, placeholder="e.g. 9876543210")
+        patient_phone = st.text_input("Mobile No (for WhatsApp)", value=clean_int_str(st.session_state.phone_input), placeholder="e.g. 9876543210")
         st.session_state.phone_input = patient_phone
     with p3:
-        patient_age = st.text_input("Age", value=st.session_state.age_input, placeholder="e.g. 45")
+        patient_age = st.text_input("Age", value=clean_int_str(st.session_state.age_input), placeholder="e.g. 45")
         st.session_state.age_input = patient_age
     with p4:
         gender_opts = ["Male", "Female", "Other"]
@@ -328,7 +350,7 @@ with tab_estimate:
                 name_val = str(med_info["name"])
                 comp_val = str(med_info["composition"]) if pd.notna(med_info["composition"]) else ""
                 type_val = str(med_info.get("type", "Tablet"))
-                pack_val = int(med_info["pack_size"]) if pd.notna(med_info["pack_size"]) else 10
+                pack_val = int(float(med_info["pack_size"])) if pd.notna(med_info["pack_size"]) else 10
                 mrp_val = float(med_info["mrp"]) if pd.notna(med_info["mrp"]) else 100.0
                 ptr_val = float(med_info.get("ptr", 0.0)) if pd.notna(med_info.get("ptr")) else 0.0
             else:
@@ -353,9 +375,9 @@ with tab_estimate:
         
         c_m1, c_m2 = st.columns(2)
         with c_m1:
-            i_mrp = st.number_input("Pack MRP (₹)", min_value=0.0, value=mrp_val, step=0.5)
+            i_mrp = st.number_input("Pack MRP (Rs.)", min_value=0.0, value=mrp_val, step=0.5)
         with c_m2:
-            i_ptr = st.number_input("PTR / Net Purchase Cost (₹)", min_value=0.0, value=ptr_val, step=0.5)
+            i_ptr = st.number_input("PTR / Net Purchase Cost (Rs.)", min_value=0.0, value=ptr_val, step=0.5)
 
         st.markdown("**Dosage & Regimen**")
         d_c1, d_c2 = st.columns([1.6, 1])
@@ -390,7 +412,7 @@ with tab_estimate:
             disc_col1, disc_col2 = st.columns([1, 1.2])
             with disc_col1:
                 saved_it_dt = edit_item.get('disc_type', '%') if is_editing else "%"
-                item_disc_type = st.selectbox("Type", ["%", "₹"], index=0 if saved_it_dt == "%" else 1, key="item_dt")
+                item_disc_type = st.selectbox("Type", ["%", "Rs."], index=0 if saved_it_dt == "%" else 1, key="item_dt")
             with disc_col2:
                 saved_it_val = float(edit_item.get('disc_val', 0.0)) if is_editing else 0.0
                 item_disc_val = st.number_input("Item Disc", min_value=0.0, value=saved_it_val, step=1.0)
@@ -472,7 +494,7 @@ with tab_estimate:
                         disc_str = f" • Disc: {itm['disc_val']}{itm['disc_type']}" if float(itm.get('disc_val', 0)) > 0 else ""
                         st.caption(f"{itm['regimen']} for {itm['days']} days{time_str}{disc_str}")
                     with r2:
-                        st.markdown(f"**₹{itm['net_amount']:.2f}**")
+                        st.markdown(f"**Rs. {itm['net_amount']:.2f}**")
                     with r3:
                         b_edit, b_del = st.columns(2)
                         with b_edit:
@@ -492,7 +514,7 @@ with tab_estimate:
             # Bill Discount Logic
             c_disc1, c_disc2, c_tot = st.columns([0.8, 1.1, 1.4])
             with c_disc1:
-                disc_opts = ["%", "₹"]
+                disc_opts = ["%", "Rs."]
                 dt_index = 0 if st.session_state.overall_disc_type == "%" else 1
                 overall_disc_type = st.selectbox("Discount Type", disc_opts, index=dt_index, key="bill_dt_select")
                 st.session_state.overall_disc_type = overall_disc_type
@@ -508,7 +530,7 @@ with tab_estimate:
                 )
                 st.session_state.overall_disc_val = overall_disc_val
 
-            if overall_disc_type == "₹":
+            if overall_disc_type in ["Rs.", "₹"]:
                 overall_disc_amt = min(float(overall_disc_val), float(subtotal))
             else:
                 overall_disc_amt = (float(subtotal) * float(overall_disc_val)) / 100.0
@@ -516,11 +538,11 @@ with tab_estimate:
             grand_total = max(0.0, float(subtotal) - float(overall_disc_amt))
 
             with c_tot:
-                st.write(f"Subtotal: **₹{subtotal:,.2f}**")
+                st.write(f"Subtotal: **Rs. {subtotal:,.2f}**")
                 if overall_disc_amt > 0:
-                    disc_label = f"{overall_disc_val:.2f}%" if overall_disc_type == "%" else f"₹{overall_disc_val:.2f}"
-                    st.write(f"Discount ({disc_label}): **-₹{overall_disc_amt:,.2f}**")
-                st.markdown(f"### Grand Total: ₹{grand_total:,.2f}")
+                    disc_label = f"{overall_disc_val:.2f}%" if overall_disc_type == "%" else f"Rs. {overall_disc_val:.2f}"
+                    st.write(f"Discount ({disc_label}): **-Rs. {overall_disc_amt:,.2f}**")
+                st.markdown(f"### Grand Total: Rs. {grand_total:,.2f}")
 
             # PDF & WhatsApp Share
             pdf_buf = generate_pdf_estimate(
@@ -531,11 +553,11 @@ with tab_estimate:
 
             wa_text = f"*MEDICINE ESTIMATE*\nPatient: {patient_name or 'Valued Customer'}\n"
             for idx, itm in enumerate(st.session_state.current_estimate, 1):
-                wa_text += f"{idx}. {itm['name']} ({itm['billing_qty']}) - ₹{itm['net_amount']:.2f}\n"
-            wa_text += f"\n*Total Amount Payable: ₹{grand_total:.2f}*"
+                wa_text += f"{idx}. {itm['name']} ({itm['billing_qty']}) - Rs. {itm['net_amount']:.2f}\n"
+            wa_text += f"\n*Total Amount Payable: Rs. {grand_total:.2f}*"
             encoded_text = urllib.parse.quote(wa_text)
             
-            clean_phone = "".join(filter(str.isdigit, str(patient_phone)))
+            clean_phone = "".join(filter(str.isdigit, clean_int_str(patient_phone)))
             if len(clean_phone) == 10:
                 clean_phone = "91" + clean_phone
             wa_url = f"https://wa.me/{clean_phone}?text={encoded_text}" if clean_phone else f"https://wa.me/?text={encoded_text}"
@@ -623,8 +645,8 @@ with tab_master:
         mm_types = ["Tablet", "Capsule", "Syrup", "Injection", "Ointment", "Drops"]
         mm_type = st.selectbox("Form", mm_types, key="mm_type")
         mm_pack = st.number_input("Pack Size", min_value=1, value=10, step=1, key="mm_pack")
-        mm_mrp = st.number_input("Pack MRP (₹)", min_value=0.0, value=100.0, step=0.5, key="mm_mrp")
-        mm_ptr = st.number_input("PTR (₹)", min_value=0.0, value=75.0, step=0.5, key="mm_ptr")
+        mm_mrp = st.number_input("Pack MRP (Rs.)", min_value=0.0, value=100.0, step=0.5, key="mm_mrp")
+        mm_ptr = st.number_input("PTR (Rs.)", min_value=0.0, value=75.0, step=0.5, key="mm_ptr")
 
         if st.button("Save to Google Sheet", use_container_width=True):
             if not str(mm_name).strip():
@@ -659,19 +681,26 @@ with tab_history:
         st.info("No saved estimates in Google Sheet.")
     else:
         disp_cols = [c for c in ["id", "patient_name", "patient_phone", "doctor_name", "estimate_date", "subtotal", "grand_total"] if c in estimates_df.columns]
+        formatted_df = estimates_df[disp_cols].copy()
+        if "id" in formatted_df.columns:
+            formatted_df["id"] = formatted_df["id"].apply(clean_int_str)
+        if "patient_phone" in formatted_df.columns:
+            formatted_df["patient_phone"] = formatted_df["patient_phone"].apply(clean_int_str)
+            
         st.dataframe(
-            estimates_df[disp_cols].sort_values(by="id", ascending=False),
+            formatted_df.sort_values(by="id", ascending=False),
             hide_index=True,
             use_container_width=True
         )
         
-        sel_id = st.selectbox("Select Estimate # to inspect, load & edit", estimates_df["id"].tolist())
-        if sel_id:
-            row = estimates_df[estimates_df["id"] == sel_id].iloc[0]
+        sel_id_raw = st.selectbox("Select Estimate # to inspect, load & edit", estimates_df["id"].tolist())
+        if sel_id_raw:
+            sel_id = int(float(sel_id_raw))
+            row = estimates_df[estimates_df["id"].astype(float).astype(int) == sel_id].iloc[0]
             all_items_df = get_sheet_data("estimate_items")
-            items_df = all_items_df[all_items_df["estimate_id"] == sel_id] if (not all_items_df.empty and "estimate_id" in all_items_df.columns) else pd.DataFrame()
+            items_df = all_items_df[all_items_df["estimate_id"].astype(float).astype(int) == sel_id] if (not all_items_df.empty and "estimate_id" in all_items_df.columns) else pd.DataFrame()
             
-            st.write(f"**Items in Estimate #{sel_id}**")
+            st.write(f"**Items in Estimate #{clean_int_str(sel_id)}**")
             if not items_df.empty:
                 summary_cols = [c for c in ["medicine_name", "regimen", "timing", "units_required", "billing_mode", "billing_qty", "base_amount", "discount_val", "net_amount"] if c in items_df.columns]
                 st.dataframe(items_df[summary_cols], hide_index=True, use_container_width=True)
@@ -687,13 +716,13 @@ with tab_history:
                         
                         reg_val = str(r.get("regimen", "")) if pd.notna(r.get("regimen")) else "1-0-1 (Twice a day / BD)"
                         time_val = str(r.get("timing", "")) if pd.notna(r.get("timing")) else "None"
-                        units_req = int(r.get("units_required", 10))
+                        units_req = int(float(r.get("units_required", 10)))
                         
                         loaded.append({
                             "name": m_name,
                             "composition": str(m_data.get("composition", "")),
                             "type": str(m_data.get("type", "Tablet")),
-                            "pack_size": int(m_data.get("pack_size", 10)),
+                            "pack_size": int(float(m_data.get("pack_size", 10))),
                             "mrp": float(m_data.get("mrp", 100.0)),
                             "ptr": float(m_data.get("ptr", 0.0)),
                             "freq": float(REGIMEN_MAP.get(reg_val, 2.0)),
@@ -711,14 +740,14 @@ with tab_history:
                         })
                     st.session_state.current_estimate = loaded
                     st.session_state.patient_input = str(row.get("patient_name", ""))
-                    st.session_state.phone_input = str(row.get("patient_phone", ""))
-                    st.session_state.age_input = str(row.get("patient_age", ""))
+                    st.session_state.phone_input = clean_int_str(row.get("patient_phone", ""))
+                    st.session_state.age_input = clean_int_str(row.get("patient_age", ""))
                     st.session_state.gender_input = str(row.get("patient_gender", "Male"))
                     st.session_state.doctor_input = str(row.get("doctor_name", ""))
                     st.session_state.overall_disc_type = str(row.get("overall_discount_type", "%")) or "%"
                     st.session_state.overall_disc_val = float(row.get("overall_discount_val", 0.0))
                     st.session_state.loaded_estimate_id = int(sel_id)
-                    st.success(f"Estimate #{sel_id} loaded from Google Sheets! Switch to 'Create / Edit Estimate' tab.")
+                    st.success(f"Estimate #{clean_int_str(sel_id)} loaded from Google Sheets! Switch to 'Create / Edit Estimate' tab.")
                     st.rerun()
 
             with c_p:
@@ -729,8 +758,8 @@ with tab_history:
                         "composition": "",
                         "regimen": str(r.get("regimen", "")),
                         "timing": str(r.get("timing", "")),
-                        "days": max(1, int(r.get("units_required", 10) / 2)),
-                        "units_needed": int(r.get("units_required", 10)),
+                        "days": max(1, int(float(r.get("units_required", 10)) / 2)),
+                        "units_needed": int(float(r.get("units_required", 10))),
                         "billing_qty": str(r.get("billing_qty", "")),
                         "base_amount": float(r.get("base_amount", 0.0)),
                         "disc_type": str(r.get("discount_type", "%")),
@@ -739,8 +768,8 @@ with tab_history:
                     })
                 
                 h_pdf = generate_pdf_estimate(
-                    str(row.get("patient_name", "")), str(row.get("patient_phone", "")), 
-                    str(row.get("patient_age", "")), str(row.get("patient_gender", "")), 
+                    str(row.get("patient_name", "")), clean_int_str(row.get("patient_phone", "")), 
+                    clean_int_str(row.get("patient_age", "")), str(row.get("patient_gender", "")), 
                     str(row.get("doctor_name", "")), hist_items,
                     float(row.get("subtotal", 0.0)), str(row.get("overall_discount_type", "%")), 
                     float(row.get("overall_discount_val", 0.0)), float(row.get("overall_discount_amt", 0.0)), 
@@ -748,9 +777,9 @@ with tab_history:
                 )
                 
                 st.download_button(
-                    label=f"📄 Download PDF (#{sel_id})",
+                    label=f"📄 Download PDF (#{clean_int_str(sel_id)})",
                     data=h_pdf,
-                    file_name=f"Estimate_{sel_id}_{row.get('patient_name', 'Patient')}.pdf",
+                    file_name=f"Estimate_{clean_int_str(sel_id)}_{row.get('patient_name', 'Patient')}.pdf",
                     mime="application/pdf",
                     use_container_width=True
                 )
