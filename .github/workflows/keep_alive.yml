@@ -2,7 +2,7 @@ name: Keep App Alive
 
 on:
   schedule:
-    # Har 12 ghante me ek baar run hoga (00:00 UTC aur 12:00 UTC)
+    # Har 12 ghante me run hoga
     - cron: '0 */12 * * *'
   workflow_dispatch:
 
@@ -12,4 +12,4 @@ jobs:
     steps:
       - name: Ping Streamlit App
         run: |
-          curl -I -s -L https://starmedi-estimator.streamlit.app
+          curl -I -s --max-time 15 "https://starmedi-estimator.streamlit.app" || true
