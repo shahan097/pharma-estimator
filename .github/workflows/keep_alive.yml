@@ -1,0 +1,15 @@
+name: Keep App Alive
+
+on:
+  schedule:
+    # Har 12 ghante me ek baar run hoga (00:00 UTC aur 12:00 UTC)
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        run: |
+          curl -I -s -L https://starmedi-estimator.streamlit.app
