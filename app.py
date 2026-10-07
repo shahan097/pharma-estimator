@@ -449,26 +449,27 @@ with tab_estimate:
             ptr_val = edit_item.get("ptr", 0.0) if is_editing else 0.0
 
         i_name = st.text_input("Medicine Brand Name", value=name_val)
-        i_comp = st.text_input("Composition / Salt", value=comp_val, placeholder="e.g. Mupirocin Ointment 2% w/w")
+        i_comp = st.text_input("Composition / Salt", value=comp_val, placeholder="e.g. Disodium Hydrogen Citrate Liquid")
 
         c_t1, c_t2, c_t3 = st.columns([1.2, 1, 1])
         with c_t1:
-            types = ["Tablet", "Capsule", "Ointment / Cream", "Syrup / Liquid", "Injection", "Drops", "Powder / Sachet"]
+            types = ["Tablet", "Capsule", "Syrup / Liquid", "Ointment / Cream", "Injection", "Drops", "Powder / Sachet"]
             curr_type = type_val if type_val in types else "Tablet"
             i_type = st.selectbox("Form", types, index=types.index(curr_type))
         with c_t2:
-            i_pack = st.number_input("Pack Quantity", min_value=1.0, value=float(pack_val), step=1.0)
+            default_pack = 100.0 if "Syrup" in i_type else (15.0 if "Ointment" in i_type else float(pack_val))
+            i_pack = st.number_input("Pack Quantity / Size", min_value=1.0, value=float(pack_val or default_pack), step=1.0)
         with c_t3:
             unit_defaults = {
                 "Tablet": "Tabs",
                 "Capsule": "Caps",
-                "Ointment / Cream": "gm (Tube)",
                 "Syrup / Liquid": "ml (Bottle)",
+                "Ointment / Cream": "gm (Tube)",
                 "Injection": "Vial / Amp",
                 "Drops": "ml (Bottle)",
                 "Powder / Sachet": "gm (Sachet)"
             }
-            available_units = ["Tabs", "Caps", "gm (Tube)", "ml (Bottle)", "Vial / Amp", "gm (Sachet)", "Unit"]
+            available_units = ["Tabs", "Caps", "ml (Bottle)", "gm (Tube)", "Vial / Amp", "gm (Sachet)", "Unit"]
             default_u = pack_unit_val if pack_unit_val in available_units else unit_defaults.get(i_type, "Tabs")
             i_pack_unit = st.selectbox("Pack Unit", available_units, index=available_units.index(default_u))
 
@@ -478,32 +479,68 @@ with tab_estimate:
         with c_m2:
             i_ptr = st.number_input("PTR / Net Purchase Cost (₹)", min_value=0.0, value=ptr_val, step=0.5)
 
+        # Dosage & Regimen Section with Liquid Measure Support
         st.markdown("**Dosage & Regimen**")
+        is_liquid = ("Syrup" in i_type or "Liquid" in i_type or "Drops" in i_type)
+        is_ointment = ("Ointment" in i_type or "Cream" in i_type)
+
         d_c1, d_c2 = st.columns([1.6, 1])
         with d_c1:
             regimen_keys = list(REGIMEN_MAP.keys())
             saved_reg = edit_item.get("regimen", regimen_keys[0]) if is_editing else regimen_keys[0]
-            sel_regimen = st.selectbox("Prescription Frequency", regimen_keys, index=regimen_keys.index(saved_reg) if saved_reg in regimen_keys else 0)
+            sel_regimen = st.selectbox("Frequency", regimen_keys, index=regimen_keys.index(saved_reg) if saved_reg in regimen_keys else 0)
         with d_c2:
             if sel_regimen == "Custom / SOS":
-                custom_doses = st.number_input("Doses/Day", min_value=0.1, value=float(edit_item["freq"]) if is_editing else 1.0, step=0.5)
+                custom_doses = st.number_input("Times/Day", min_value=0.1, value=float(edit_item["freq"]) if is_editing else 1.0, step=0.5)
             else:
                 custom_doses = REGIMEN_MAP[sel_regimen]
                 if custom_doses < 1.0:
                     st.write(f"Frequency: **{sel_regimen}**")
                 else:
-                    st.write(f"Doses: **{custom_doses}/day**")
+                    st.write(f"Doses: **{custom_doses} times/day**")
+
+        # Liquid Measure / Serving selector (tsp / ml)
+        dose_ml_multiplier = 1.0
+        dose_label_text = ""
+        if is_liquid:
+            l_col1, l_col2 = st.columns(2)
+            with l_col1:
+                liquid_measures = [
+                    "2 tsp (10 ml)",
+                    "1 tsp (5 ml)",
+                    "1 tbsp (15 ml)",
+                    "0.5 tsp / 2.5 ml",
+                    "Custom ml per dose"
+                ]
+                sel_measure = st.selectbox("Dose Volume per intake", liquid_measures, index=0)
+            with l_col2:
+                if sel_measure == "2 tsp (10 ml)":
+                    dose_ml_multiplier = 10.0
+                elif sel_measure == "1 tsp (5 ml)":
+                    dose_ml_multiplier = 5.0
+                elif sel_measure == "1 tbsp (15 ml)":
+                    dose_ml_multiplier = 15.0
+                elif sel_measure == "0.5 tsp / 2.5 ml":
+                    dose_ml_multiplier = 2.5
+                else:
+                    dose_ml_multiplier = st.number_input("Enter ml per dose", min_value=0.5, value=10.0, step=0.5)
+            dose_label_text = f"{sel_measure} • "
 
         t_c1, t_c2 = st.columns([1.2, 1.2])
         with t_c1:
-            timings = ["None", "After Food (PC)", "Before Food (AC)", "With Food", "Empty Stomach", "At Bedtime", "Apply on affected area"]
-            saved_time = edit_item.get("timing", "None") if is_editing else "None"
+            timings = ["None", "After Food (PC)", "Before Food (AC)", "With Water", "With Food", "Empty Stomach", "At Bedtime", "Apply on affected area"]
+            saved_time = edit_item.get("timing", "None") if is_editing else ("With Water" if is_liquid else "None")
             sel_timing = st.selectbox("Instructions / Timing", timings, index=timings.index(saved_time) if saved_time in timings else 0)
         with t_c2:
-            i_days = st.number_input("Course Days", min_value=1, value=int(edit_item["days"]) if is_editing else 5, step=1)
+            i_days = st.number_input("Course Days (e.g. 30 for 1 month)", min_value=1, value=int(edit_item["days"]) if is_editing else (30 if is_liquid else 5), step=1)
 
-        is_topical_or_liquid = ("Ointment" in i_type or "Syrup" in i_type or "Drops" in i_type)
-        if is_topical_or_liquid:
+        # Smart Calculation Logic
+        if is_liquid:
+            total_ml_needed = dose_ml_multiplier * custom_doses * i_days
+            bottles_needed = max(1, math.ceil(total_ml_needed / i_pack))
+            calculated_units = bottles_needed
+            st.info(f"📊 **Liquid Estimate:** {dose_ml_multiplier} ml × {custom_doses} times/day × {i_days} days = **{total_ml_needed:,.1f} ml required** $\\rightarrow$ **{bottles_needed} Bottle(s) of {int(i_pack)} ml**")
+        elif is_ointment:
             calculated_units = 1
             st.caption(f"Course Duration: **{i_days} Days** (Container size: **{i_pack} {i_pack_unit}**)")
         else:
@@ -512,9 +549,9 @@ with tab_estimate:
 
         b_c1, b_c2 = st.columns([1.3, 1])
         with b_c1:
-            if is_topical_or_liquid:
+            if is_liquid or is_ointment:
                 i_mode = "Full Pack Rounding"
-                st.info(f"Topical/Liquid preparations are billed in **Full Container(s)**.")
+                st.caption(f"Billed as **Full Pack / Bottle Rounding**.")
             else:
                 mode_opts = ["Full Pack Rounding", "Allow Cutting / Loose Units"]
                 saved_mode = 0 if not is_editing or edit_item["billing_mode"] == "Full Pack Rounding" else 1
@@ -538,10 +575,15 @@ with tab_estimate:
                     upsert_medicine_gsheet(i_name, i_comp, i_type, i_pack, i_pack_unit, i_mrp, i_ptr)
 
                     unit_rate = i_mrp / i_pack if i_pack > 0 else 0
-                    if is_topical_or_liquid or i_mode == "Full Pack Rounding":
-                        packs = max(1, math.ceil(calculated_units / i_pack)) if not is_topical_or_liquid else 1
+                    if is_liquid:
+                        packs = bottles_needed
                         base_cost = packs * i_mrp
-                        billing_label = f"{packs} Pack ({i_pack} {i_pack_unit})" if is_topical_or_liquid else f"{packs} Pack(s)"
+                        billing_label = f"{packs} Bottle(s) ({int(i_pack)} ml)"
+                        ptr_cost = packs * i_ptr
+                    elif is_ointment or i_mode == "Full Pack Rounding":
+                        packs = max(1, math.ceil(calculated_units / i_pack)) if not is_ointment else 1
+                        base_cost = packs * i_mrp
+                        billing_label = f"{packs} Tube ({i_pack} {i_pack_unit})" if is_ointment else f"{packs} Pack(s)"
                         ptr_cost = packs * i_ptr
                     else:
                         base_cost = calculated_units * unit_rate
@@ -550,6 +592,9 @@ with tab_estimate:
 
                     disc_amount = (base_cost * item_disc_val / 100.0) if item_disc_type == "%" else min(item_disc_val, base_cost)
                     net_cost = max(0.0, base_cost - disc_amount)
+
+                    # Regimen text with ml detail for PDF/WhatsApp
+                    display_regimen = f"{dose_label_text}{sel_regimen}" if is_liquid else str(sel_regimen)
 
                     payload = {
                         "name": str(i_name).strip(),
@@ -560,7 +605,7 @@ with tab_estimate:
                         "mrp": float(i_mrp),
                         "ptr": float(i_ptr),
                         "freq": float(custom_doses),
-                        "regimen": str(sel_regimen),
+                        "regimen": display_regimen,
                         "timing": str(sel_timing),
                         "days": int(i_days),
                         "units_needed": calculated_units,
@@ -754,12 +799,12 @@ with tab_master:
         st.markdown("##### Add / Update Master Item")
         mm_name = st.text_input("Medicine Brand", key="mm_name")
         mm_comp = st.text_input("Composition / Salt", key="mm_comp")
-        mm_types = ["Tablet", "Capsule", "Ointment / Cream", "Syrup / Liquid", "Injection", "Drops", "Powder / Sachet"]
+        mm_types = ["Tablet", "Capsule", "Syrup / Liquid", "Ointment / Cream", "Injection", "Drops", "Powder / Sachet"]
         mm_type = st.selectbox("Form", mm_types, key="mm_type")
-        mm_pack = st.number_input("Pack Size", min_value=1.0, value=10.0, step=1.0, key="mm_pack")
+        mm_pack = st.number_input("Pack Size", min_value=1.0, value=100.0 if "Syrup" in mm_type else 10.0, step=1.0, key="mm_pack")
         
-        master_units = ["Tabs", "Caps", "gm (Tube)", "ml (Bottle)", "Vial / Amp", "gm (Sachet)", "Unit"]
-        mm_unit = st.selectbox("Pack Unit", master_units, key="mm_unit")
+        master_units = ["Tabs", "Caps", "ml (Bottle)", "gm (Tube)", "Vial / Amp", "gm (Sachet)", "Unit"]
+        mm_unit = st.selectbox("Pack Unit", master_units, index=2 if "Syrup" in mm_type else 0, key="mm_unit")
         
         mm_mrp = st.number_input("Pack MRP (₹)", min_value=0.0, value=100.0, step=0.5, key="mm_mrp")
         mm_ptr = st.number_input("PTR (₹)", min_value=0.0, value=75.0, step=0.5, key="mm_ptr")
