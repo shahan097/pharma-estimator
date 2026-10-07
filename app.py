@@ -111,11 +111,9 @@ def save_sheet_data(worksheet_name, df):
     sheet_url = st.secrets["connections"]["gsheets"].get("spreadsheet")
     cleaned_df = df.fillna("")
 
-    # Try high-level st-gsheets-connection update first
     try:
         conn.update(spreadsheet=sheet_url, worksheet=worksheet_name, data=cleaned_df)
     except Exception:
-        # Fallback to direct native gspread write
         try:
             client = conn._instance._client
             sh = client.open_by_url(sheet_url)
@@ -133,24 +131,29 @@ def save_sheet_data(worksheet_name, df):
 def get_medicines():
     df = get_sheet_data("medicines")
     if df.empty:
-        df = pd.DataFrame(columns=["name", "composition", "type", "pack_size", "mrp", "ptr"])
+        df = pd.DataFrame(columns=["name", "composition", "type", "pack_size", "pack_unit", "mrp", "ptr"])
     return df
 
-def upsert_medicine_gsheet(name, composition, med_type, pack_size, mrp, ptr):
+def upsert_medicine_gsheet(name, composition, med_type, pack_size, pack_unit, mrp, ptr):
     df = get_medicines()
     name_clean = str(name).strip()
     new_row = {
         "name": name_clean,
         "composition": str(composition).strip(),
         "type": str(med_type),
-        "pack_size": int(pack_size),
+        "pack_size": float(pack_size),
+        "pack_unit": str(pack_unit),
         "mrp": float(mrp),
         "ptr": float(ptr)
     }
 
     if not df.empty and "name" in df.columns and name_clean in df["name"].astype(str).values:
-        df.loc[df["name"].astype(str) == name_clean, ["composition", "type", "pack_size", "mrp", "ptr"]] = [
-            str(composition).strip(), str(med_type), int(pack_size), float(mrp), float(ptr)
+        cols_to_update = ["composition", "type", "pack_size", "pack_unit", "mrp", "ptr"]
+        for col in cols_to_update:
+            if col not in df.columns:
+                df[col] = ""
+        df.loc[df["name"].astype(str) == name_clean, cols_to_update] = [
+            str(composition).strip(), str(med_type), float(pack_size), str(pack_unit), float(mrp), float(ptr)
         ]
     else:
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -220,7 +223,7 @@ def save_estimate_to_gsheet(p_name, p_phone, p_age, p_gender, d_name, items, sub
             "medicine_name": str(itm["name"]),
             "regimen": str(itm["regimen"]),
             "timing": str(itm["timing"]),
-            "units_required": int(itm["units_needed"]),
+            "units_required": str(itm.get("units_needed", "")),
             "billing_mode": str(itm["billing_mode"]),
             "billing_qty": str(itm["billing_qty"]),
             "base_amount": float(itm["base_amount"]),
@@ -290,7 +293,10 @@ def generate_pdf_estimate(p_name, p_phone, p_age, p_gender, d_name, items, subto
         dose_label = f"{str(itm.get('regimen', ''))}"
         if itm.get("timing") and str(itm.get("timing")) != "None":
             dose_label += f"<br/><font size=7 color='#2563EB'>{str(itm['timing'])}</font>"
-        dose_label += f" ({str(itm.get('days', 1))} days)"
+        
+        days_count = itm.get('days', 1)
+        if days_count:
+            dose_label += f" ({days_count} days)"
 
         disc_str = f"{float(itm.get('disc_val', 0)):.0f}%" if itm.get("disc_type") == "%" else f"{sym}{float(itm.get('disc_val', 0)):.0f}"
         if float(itm.get("disc_val", 0)) == 0:
@@ -339,6 +345,10 @@ REGIMEN_MAP = {
     "0-0-1 (Night only / HS)": 1.0,
     "1-1-1-1 (Four times / QID)": 4.0,
     "0.5-0-0.5 (Half tablet twice)": 1.0,
+    "Alternate Days (QOD)": 0.5,
+    "Once a Week (Weekly)": 1.0 / 7.0,
+    "Twice a Week": 2.0 / 7.0,
+    "Apply 1-2 times daily (Topical)": 1.0,
     "Custom / SOS": 1.0
 }
 
@@ -423,28 +433,44 @@ with tab_estimate:
                 name_val = str(med_info["name"])
                 comp_val = str(med_info["composition"]) if pd.notna(med_info["composition"]) else ""
                 type_val = str(med_info.get("type", "Tablet"))
-                pack_val = int(float(med_info["pack_size"])) if pd.notna(med_info["pack_size"]) else 10
+                pack_val = float(med_info["pack_size"]) if pd.notna(med_info["pack_size"]) else 10.0
+                pack_unit_val = str(med_info.get("pack_unit", "Tabs")) if pd.notna(med_info.get("pack_unit")) else "Tabs"
                 mrp_val = float(med_info["mrp"]) if pd.notna(med_info["mrp"]) else 100.0
                 ptr_val = float(med_info.get("ptr", 0.0)) if pd.notna(med_info.get("ptr")) else 0.0
             else:
-                name_val, comp_val, type_val, pack_val, mrp_val, ptr_val = "", "", "Tablet", 10, 100.0, 0.0
+                name_val, comp_val, type_val, pack_val, pack_unit_val, mrp_val, ptr_val = "", "", "Tablet", 10.0, "Tabs", 100.0, 0.0
         else:
             name_val = edit_item["name"] if is_editing else ""
             comp_val = edit_item.get("composition", "") if is_editing else ""
             type_val = edit_item["type"] if is_editing else "Tablet"
-            pack_val = edit_item["pack_size"] if is_editing else 10
+            pack_val = float(edit_item.get("pack_size", 10.0)) if is_editing else 10.0
+            pack_unit_val = str(edit_item.get("pack_unit", "Tabs")) if is_editing else "Tabs"
             mrp_val = edit_item["mrp"] if is_editing else 100.0
             ptr_val = edit_item.get("ptr", 0.0) if is_editing else 0.0
 
         i_name = st.text_input("Medicine Brand Name", value=name_val)
-        i_comp = st.text_input("Composition / Salt", value=comp_val, placeholder="e.g. Amoxicillin + Clavulanic Acid")
+        i_comp = st.text_input("Composition / Salt", value=comp_val, placeholder="e.g. Mupirocin Ointment 2% w/w")
 
-        c_t1, c_t2 = st.columns(2)
+        c_t1, c_t2, c_t3 = st.columns([1.2, 1, 1])
         with c_t1:
-            types = ["Tablet", "Capsule", "Syrup", "Injection", "Ointment", "Drops"]
-            i_type = st.selectbox("Form", types, index=types.index(type_val) if type_val in types else 0)
+            types = ["Tablet", "Capsule", "Ointment / Cream", "Syrup / Liquid", "Injection", "Drops", "Powder / Sachet"]
+            curr_type = type_val if type_val in types else "Tablet"
+            i_type = st.selectbox("Form", types, index=types.index(curr_type))
         with c_t2:
-            i_pack = st.number_input("Pack Size", min_value=1, value=pack_val, step=1)
+            i_pack = st.number_input("Pack Quantity", min_value=1.0, value=float(pack_val), step=1.0)
+        with c_t3:
+            unit_defaults = {
+                "Tablet": "Tabs",
+                "Capsule": "Caps",
+                "Ointment / Cream": "gm (Tube)",
+                "Syrup / Liquid": "ml (Bottle)",
+                "Injection": "Vial / Amp",
+                "Drops": "ml (Bottle)",
+                "Powder / Sachet": "gm (Sachet)"
+            }
+            available_units = ["Tabs", "Caps", "gm (Tube)", "ml (Bottle)", "Vial / Amp", "gm (Sachet)", "Unit"]
+            default_u = pack_unit_val if pack_unit_val in available_units else unit_defaults.get(i_type, "Tabs")
+            i_pack_unit = st.selectbox("Pack Unit", available_units, index=available_units.index(default_u))
 
         c_m1, c_m2 = st.columns(2)
         with c_m1:
@@ -457,30 +483,42 @@ with tab_estimate:
         with d_c1:
             regimen_keys = list(REGIMEN_MAP.keys())
             saved_reg = edit_item.get("regimen", regimen_keys[0]) if is_editing else regimen_keys[0]
-            sel_regimen = st.selectbox("Prescription Code", regimen_keys, index=regimen_keys.index(saved_reg) if saved_reg in regimen_keys else 0)
+            sel_regimen = st.selectbox("Prescription Frequency", regimen_keys, index=regimen_keys.index(saved_reg) if saved_reg in regimen_keys else 0)
         with d_c2:
             if sel_regimen == "Custom / SOS":
-                custom_doses = st.number_input("Doses/Day", min_value=0.5, value=float(edit_item["freq"]) if is_editing else 1.0, step=0.5)
+                custom_doses = st.number_input("Doses/Day", min_value=0.1, value=float(edit_item["freq"]) if is_editing else 1.0, step=0.5)
             else:
                 custom_doses = REGIMEN_MAP[sel_regimen]
-                st.write(f"Doses: **{custom_doses}/day**")
+                if custom_doses < 1.0:
+                    st.write(f"Frequency: **{sel_regimen}**")
+                else:
+                    st.write(f"Doses: **{custom_doses}/day**")
 
         t_c1, t_c2 = st.columns([1.2, 1.2])
         with t_c1:
-            timings = ["None", "After Food (PC)", "Before Food (AC)", "With Food", "Empty Stomach", "At Bedtime"]
+            timings = ["None", "After Food (PC)", "Before Food (AC)", "With Food", "Empty Stomach", "At Bedtime", "Apply on affected area"]
             saved_time = edit_item.get("timing", "None") if is_editing else "None"
-            sel_timing = st.selectbox("Meal Timing", timings, index=timings.index(saved_time) if saved_time in timings else 0)
+            sel_timing = st.selectbox("Instructions / Timing", timings, index=timings.index(saved_time) if saved_time in timings else 0)
         with t_c2:
             i_days = st.number_input("Course Days", min_value=1, value=int(edit_item["days"]) if is_editing else 5, step=1)
 
-        total_units = math.ceil(custom_doses * i_days)
-        st.caption(f"Calculated Total Consumption: **{total_units} units**")
+        is_topical_or_liquid = ("Ointment" in i_type or "Syrup" in i_type or "Drops" in i_type)
+        if is_topical_or_liquid:
+            calculated_units = 1
+            st.caption(f"Course Duration: **{i_days} Days** (Container size: **{i_pack} {i_pack_unit}**)")
+        else:
+            calculated_units = math.ceil(custom_doses * i_days)
+            st.caption(f"Calculated Total Consumption: **{calculated_units} {i_pack_unit}**")
 
         b_c1, b_c2 = st.columns([1.3, 1])
         with b_c1:
-            mode_opts = ["Full Pack Rounding", "Allow Cutting / Loose Units"]
-            saved_mode = 0 if not is_editing or edit_item["billing_mode"] == "Full Pack Rounding" else 1
-            i_mode = st.radio("Billing Mode", mode_opts, index=saved_mode, horizontal=True)
+            if is_topical_or_liquid:
+                i_mode = "Full Pack Rounding"
+                st.info(f"Topical/Liquid preparations are billed in **Full Container(s)**.")
+            else:
+                mode_opts = ["Full Pack Rounding", "Allow Cutting / Loose Units"]
+                saved_mode = 0 if not is_editing or edit_item["billing_mode"] == "Full Pack Rounding" else 1
+                i_mode = st.radio("Billing Mode", mode_opts, index=saved_mode, horizontal=True)
         with b_c2:
             disc_col1, disc_col2 = st.columns([1, 1.2])
             with disc_col1:
@@ -497,18 +535,18 @@ with tab_estimate:
                 if not i_name.strip():
                     st.error("Please provide a medicine name.")
                 else:
-                    upsert_medicine_gsheet(i_name, i_comp, i_type, i_pack, i_mrp, i_ptr)
+                    upsert_medicine_gsheet(i_name, i_comp, i_type, i_pack, i_pack_unit, i_mrp, i_ptr)
 
                     unit_rate = i_mrp / i_pack if i_pack > 0 else 0
-                    if i_mode == "Full Pack Rounding":
-                        packs = math.ceil(total_units / i_pack)
+                    if is_topical_or_liquid or i_mode == "Full Pack Rounding":
+                        packs = max(1, math.ceil(calculated_units / i_pack)) if not is_topical_or_liquid else 1
                         base_cost = packs * i_mrp
-                        billing_label = f"{packs} Pack(s)"
+                        billing_label = f"{packs} Pack ({i_pack} {i_pack_unit})" if is_topical_or_liquid else f"{packs} Pack(s)"
                         ptr_cost = packs * i_ptr
                     else:
-                        base_cost = total_units * unit_rate
-                        billing_label = f"{total_units} Unit(s)"
-                        ptr_cost = total_units * (i_ptr / i_pack if i_pack > 0 else 0)
+                        base_cost = calculated_units * unit_rate
+                        billing_label = f"{calculated_units} {i_pack_unit}"
+                        ptr_cost = calculated_units * (i_ptr / i_pack if i_pack > 0 else 0)
 
                     disc_amount = (base_cost * item_disc_val / 100.0) if item_disc_type == "%" else min(item_disc_val, base_cost)
                     net_cost = max(0.0, base_cost - disc_amount)
@@ -517,14 +555,15 @@ with tab_estimate:
                         "name": str(i_name).strip(),
                         "composition": str(i_comp).strip(),
                         "type": str(i_type),
-                        "pack_size": int(i_pack),
+                        "pack_size": float(i_pack),
+                        "pack_unit": str(i_pack_unit),
                         "mrp": float(i_mrp),
                         "ptr": float(i_ptr),
                         "freq": float(custom_doses),
                         "regimen": str(sel_regimen),
                         "timing": str(sel_timing),
                         "days": int(i_days),
-                        "units_needed": int(total_units),
+                        "units_needed": calculated_units,
                         "billing_mode": str(i_mode),
                         "billing_qty": str(billing_label),
                         "base_amount": round(base_cost, 2),
@@ -715,9 +754,13 @@ with tab_master:
         st.markdown("##### Add / Update Master Item")
         mm_name = st.text_input("Medicine Brand", key="mm_name")
         mm_comp = st.text_input("Composition / Salt", key="mm_comp")
-        mm_types = ["Tablet", "Capsule", "Syrup", "Injection", "Ointment", "Drops"]
+        mm_types = ["Tablet", "Capsule", "Ointment / Cream", "Syrup / Liquid", "Injection", "Drops", "Powder / Sachet"]
         mm_type = st.selectbox("Form", mm_types, key="mm_type")
-        mm_pack = st.number_input("Pack Size", min_value=1, value=10, step=1, key="mm_pack")
+        mm_pack = st.number_input("Pack Size", min_value=1.0, value=10.0, step=1.0, key="mm_pack")
+        
+        master_units = ["Tabs", "Caps", "gm (Tube)", "ml (Bottle)", "Vial / Amp", "gm (Sachet)", "Unit"]
+        mm_unit = st.selectbox("Pack Unit", master_units, key="mm_unit")
+        
         mm_mrp = st.number_input("Pack MRP (₹)", min_value=0.0, value=100.0, step=0.5, key="mm_mrp")
         mm_ptr = st.number_input("PTR (₹)", min_value=0.0, value=75.0, step=0.5, key="mm_ptr")
 
@@ -726,7 +769,7 @@ with tab_master:
                 st.error("Medicine Name is required.")
             else:
                 with st.spinner("Updating Google Sheet..."):
-                    upsert_medicine_gsheet(mm_name, mm_comp, mm_type, mm_pack, mm_mrp, mm_ptr)
+                    upsert_medicine_gsheet(mm_name, mm_comp, mm_type, mm_pack, mm_unit, mm_mrp, mm_ptr)
                 st.success(f"Saved/Updated '{mm_name}' in Google Sheet.")
                 st.rerun()
 
@@ -734,7 +777,7 @@ with tab_master:
         st.markdown("##### Current Catalog in Google Sheet")
         df_meds = get_medicines()
         if not df_meds.empty:
-            cols_show = [c for c in ["name", "composition", "type", "pack_size", "mrp", "ptr"] if c in df_meds.columns]
+            cols_show = [c for c in ["name", "composition", "type", "pack_size", "pack_unit", "mrp", "ptr"] if c in df_meds.columns]
             st.dataframe(
                 df_meds[cols_show],
                 hide_index=True,
@@ -785,23 +828,24 @@ with tab_history:
                     loaded = []
                     for _, r in items_df.iterrows():
                         m_name = str(r["medicine_name"])
-                        m_data = meds_master.get(m_name, {"composition": "", "type": "Tablet", "pack_size": 10, "mrp": 100.0, "ptr": 0.0})
+                        m_data = meds_master.get(m_name, {"composition": "", "type": "Tablet", "pack_size": 10.0, "pack_unit": "Tabs", "mrp": 100.0, "ptr": 0.0})
 
                         reg_val = str(r.get("regimen", "")) if pd.notna(r.get("regimen")) else "1-0-1 (Twice a day / BD)"
                         time_val = str(r.get("timing", "")) if pd.notna(r.get("timing")) else "None"
-                        units_req = int(float(r.get("units_required", 10)))
+                        units_req = r.get("units_required", 1)
 
                         loaded.append({
                             "name": m_name,
                             "composition": str(m_data.get("composition", "")),
                             "type": str(m_data.get("type", "Tablet")),
-                            "pack_size": int(float(m_data.get("pack_size", 10))),
+                            "pack_size": float(m_data.get("pack_size", 10.0)),
+                            "pack_unit": str(m_data.get("pack_unit", "Tabs")),
                             "mrp": float(m_data.get("mrp", 100.0)),
                             "ptr": float(m_data.get("ptr", 0.0)),
                             "freq": float(REGIMEN_MAP.get(reg_val, 2.0)),
                             "regimen": reg_val,
                             "timing": time_val,
-                            "days": max(1, int(units_req / 2)),
+                            "days": 5,
                             "units_needed": units_req,
                             "billing_mode": str(r.get("billing_mode", "Full Pack Rounding")),
                             "billing_qty": str(r.get("billing_qty", "")),
@@ -831,8 +875,8 @@ with tab_history:
                         "composition": "",
                         "regimen": str(r.get("regimen", "")),
                         "timing": str(r.get("timing", "")),
-                        "days": max(1, int(float(r.get("units_required", 10)) / 2)),
-                        "units_needed": int(float(r.get("units_required", 10))),
+                        "days": "",
+                        "units_needed": str(r.get("units_required", "")),
                         "billing_qty": str(r.get("billing_qty", "")),
                         "base_amount": float(r.get("base_amount", 0.0)),
                         "disc_type": str(r.get("discount_type", "%")),
